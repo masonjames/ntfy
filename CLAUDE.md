@@ -124,3 +124,47 @@ make lint          # golint
 make staticcheck   # staticcheck
 make web-lint      # eslint for web app
 ```
+
+## Deployment
+
+This fork is deployed to `ntfy.masonjames.com` via GHCR and Dokploy.
+
+### Docker Image
+
+- **Registry**: `ghcr.io/masonjames/ntfy:latest`
+- **Build**: GitHub Actions on push to main (`.github/workflows/ghcr-build.yml`)
+- **Dockerfile**: `Dockerfile-build` (multi-stage build)
+
+### Automatic Deployment
+
+1. Push to `main` branch
+2. GitHub Actions builds and pushes to GHCR
+3. Image available at `ghcr.io/masonjames/ntfy:latest`
+
+### Manual Update on Server
+
+```bash
+ssh root@platform-core "cd /etc/dokploy/compose/system-apps-ntfy-agehfb/code && \
+  docker compose pull && \
+  docker compose up -d --force-recreate"
+```
+
+### Verify Deployment
+
+```bash
+curl -s https://ntfy.masonjames.com/v1/health
+# Expected: {"healthy":true}
+```
+
+### Server Configuration
+
+The server runs with:
+- `NTFY_AUTH_DEFAULT_ACCESS=deny-all` (authentication required)
+- `NTFY_BEHIND_PROXY=true` (runs behind Traefik)
+- `NTFY_ENABLE_LOGIN=true` / `NTFY_ENABLE_SIGNUP=false`
+
+### Related Documentation
+
+Full deployment details in platform-infra repo:
+- `docs/services/ntfy.md` - Service documentation
+- `docs/runbooks/workflows/ghcr-github-actions.md` - GHCR deployment guide

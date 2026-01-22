@@ -40,6 +40,8 @@ ADD ./log ./log
 ADD ./server ./server
 ADD ./user ./user
 ADD ./util ./util
+ADD ./payments ./payments
+ADD ./test ./test
 RUN make VERSION=$VERSION COMMIT=$COMMIT cli-linux-server
 
 FROM alpine

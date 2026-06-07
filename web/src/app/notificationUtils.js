@@ -2,6 +2,7 @@
 // and cannot be used in the service worker
 
 import emojisMapped from "./emojisMapped";
+import { ACTION_HTTP, ACTION_VIEW } from "./actions";
 
 const toEmojis = (tags) => {
   if (!tags) return [];
@@ -34,7 +35,7 @@ export const formatMessage = (m) => {
   return m.message || "";
 };
 
-const imageRegex = /\.(png|jpe?g|gif|webp)$/i;
+export const imageRegex = /\.(png|jpe?g|gif|webp)$/i;
 export const isImage = (attachment) => {
   if (!attachment) return false;
 
@@ -60,6 +61,7 @@ export const toNotificationParams = ({ message, defaultTitle, topicRoute, baseUr
   const image = isImage(message.attachment) ? message.attachment.url : undefined;
   const sequenceId = message.sequence_id || message.id;
   const tag = notificationTag(baseUrl, topic, sequenceId);
+  const subscriptionId = `${baseUrl}/${topic}`;
 
   // https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API
   return [
@@ -75,11 +77,12 @@ export const toNotificationParams = ({ message, defaultTitle, topicRoute, baseUr
       silent: false,
       // This is used by the notification onclick event
       data: {
+        subscriptionId,
         message,
         topicRoute,
       },
       actions: message.actions
-        ?.filter(({ action }) => action === "view" || action === "http")
+        ?.filter(({ action }) => action === ACTION_VIEW || action === ACTION_HTTP)
         .map(({ label }) => ({
           action: label,
           title: label,

@@ -1,4 +1,5 @@
 MAKEFLAGS := --jobs=1
+NPM := npm
 PYTHON := python3
 PIP := pip3
 VERSION := $(shell git describe --tag)
@@ -137,7 +138,7 @@ web: web-deps web-build
 
 web-build:
 	cd web \
-		&& npm run build \
+		&& $(NPM) run build \
 		&& mv build/index.html build/app.html \
 		&& rm -rf ../server/site \
 		&& mv build ../server/site \
@@ -145,20 +146,22 @@ web-build:
 			../server/site/config.js
 
 web-deps:
-	cd web && npm install
+	cd web && $(NPM) ci
+	# Use "npm ci" so that we don't change the package lock file
 	# If this fails for .svg files, optimize them with svgo
 
 web-deps-update:
-	cd web && npm update
+	cd web && $(NPM) update --before="$(shell date -d '7 days ago' +%Y-%m-%d)"
+	cd web && $(NPM) install
 
 web-fmt:
-	cd web && npm run format
+	cd web && $(NPM) run format
 
 web-fmt-check:
-	cd web && npm run format:check
+	cd web && $(NPM) run format:check
 
 web-lint:
-	cd web && npm run lint
+	cd web && $(NPM) run lint
 
 # Main server/client build
 
@@ -245,6 +248,7 @@ cli-deps-gcc-windows:
 
 cli-deps-update:
 	go get -u
+	go mod tidy
 	go install honnef.co/go/tools/cmd/staticcheck@latest
 	go install golang.org/x/lint/golint@latest
 	go install github.com/goreleaser/goreleaser/v2@latest
@@ -263,23 +267,25 @@ cli-build-results:
 
 check: test web-fmt-check fmt-check vet web-lint lint staticcheck
 
+checkv: testv web-fmt-check fmt-check vet web-lint lint staticcheck
+
 test: .PHONY
-	go test $(shell go list ./... | grep -vE 'ntfy/(test|examples|tools)')
+	go test $(shell go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -vE 'ntfy/v2/(test|examples|tools)')
 
 testv: .PHONY
-	go test -v $(shell go list ./... | grep -vE 'ntfy/(test|examples|tools)')
+	go test -v $(shell go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -vE 'ntfy/v2/(test|examples|tools)')
 
 race: .PHONY
-	go test -v -race $(shell go list ./... | grep -vE 'ntfy/(test|examples|tools)')
+	go test -v -race $(shell go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -vE 'ntfy/v2/(test|examples|tools)')
 
 coverage:
 	mkdir -p build/coverage
-	go test -v -race -coverprofile=build/coverage/coverage.txt -covermode=atomic $(shell go list ./... | grep -vE 'ntfy/(test|examples|tools)')
+	go test -v -race -coverprofile=build/coverage/coverage.txt -covermode=atomic $(shell go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -vE 'ntfy/v2/(test|examples|tools|web)')
 	go tool cover -func build/coverage/coverage.txt
 
 coverage-html:
 	mkdir -p build/coverage
-	go test -race -coverprofile=build/coverage/coverage.txt -covermode=atomic $(shell go list ./... | grep -vE 'ntfy/(test|examples|tools)')
+	go test -race -coverprofile=build/coverage/coverage.txt -covermode=atomic $(shell go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -vE 'ntfy/v2/(test|examples|tools)')
 	go tool cover -html build/coverage/coverage.txt
 
 coverage-upload:

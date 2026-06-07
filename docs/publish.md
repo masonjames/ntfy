@@ -932,7 +932,7 @@ Here's an example of how it will look on Android:
 </figure>
 
 ## Attachments
-_Supported on:_ :material-android: :material-firefox:
+_Supported on:_ :material-android: :material-apple: :material-firefox:
 
 You can **send images and other files to your phone** as attachments to a notification. The attachments are then downloaded
 onto your phone (depending on size and setting automatically), and can be used from the Downloads folder.
@@ -1134,6 +1134,7 @@ As of today, the following actions are supported:
 * [`broadcast`](#send-android-broadcast): Sends an [Android broadcast](https://developer.android.com/guide/components/broadcasts) intent
   when the action button is tapped (only supported on Android)
 * [`http`](#send-http-request): Sends HTTP POST/GET/PUT request when the action button is tapped
+* [`copy`](#copy-to-clipboard): Copies a given value to the clipboard when the action button is tapped
 
 Here's an example of what a notification with actions can look like:
 
@@ -1164,9 +1165,12 @@ To define actions using the `X-Actions` header (or any of its aliases: `Actions`
 Multiple actions are separated by a semicolon (`;`), and key/value pairs are separated by commas (`,`). Values may be 
 quoted with double quotes (`"`) or single quotes (`'`) if the value itself contains commas or semicolons. 
 
-The `action=` and `label=` prefix are optional in all actions, and the `url=` prefix is optional in the `view` and 
-`http` action. The only limitation of this format is that depending on your language/library, UTF-8 characters may not 
-work. If they don't, use the [JSON array format](#using-a-json-array) instead.
+Each action type has a short format where some key prefixes can be omitted:
+
+* [`view`](#open-websiteapp): `view, <label>, <url>[, clear=true]`
+* [`broadcast`](#send-android-broadcast):`broadcast, <label>[, extras.<param>=<value>][, intent=<intent>][, clear=true]`
+* [`http`](#send-http-request): `http, <label>, <url>[, method=<method>][, headers.<header>=<value>][, body=<body>][, clear=true]`
+* [`copy`](#copy-to-clipboard): `copy, <label>, <value>[, clear=true]`
 
 As an example, here's how you can create the above notification using this format. Refer to the [`view` action](#open-websiteapp) and 
 [`http` action](#send-http-request) section for details on the specific actions:
@@ -1466,8 +1470,8 @@ Alternatively, the same actions can be defined as **JSON array**, if the notific
     ```
 
 The required/optional fields for each action depend on the type of the action itself. Please refer to 
-[`view` action](#open-websiteapp), [`broadcast` action](#send-android-broadcast), and [`http` action](#send-http-request) 
-for details.
+[`view` action](#open-websiteapp), [`broadcast` action](#send-android-broadcast), [`http` action](#send-http-request),
+and [`copy` action](#copy-to-clipboard) for details.
 
 ### Open website/app
 _Supported on:_ :material-android: :material-apple: :material-firefox:
@@ -1619,7 +1623,7 @@ And the same example using [JSON publishing](#publish-as-json):
         method: 'POST',
         body: JSON.stringify({
             topic: "myhome",
-            message": "Somebody retweeted your tweet.",
+            message: "Somebody retweeted your tweet.",
             actions: [
                 {
                     action: "view",
@@ -1709,6 +1713,9 @@ And the same example using [JSON publishing](#publish-as-json):
         ]
     ]));
     ```
+
+The short format for the `view` action is `view, <label>, <url>` (e.g. `view, Open Google, https://google.com`),
+but you can always just use the `<key>=<value>` notation as well (e.g. `action=view, url=https://google.com, label=Open Google`).
 
 The `view` action supports the following fields:
 
@@ -1879,7 +1886,7 @@ And the same example using [JSON publishing](#publish-as-json):
         method: 'POST',
         body: JSON.stringify({
             topic: "wifey",
-            message": "Your wife requested you send a picture of yourself.",
+            message: "Your wife requested you send a picture of yourself.",
             actions: [
                 {
                     "action": "broadcast",
@@ -1985,6 +1992,9 @@ And the same example using [JSON publishing](#publish-as-json):
         ]
     ]));
     ```
+
+The short format for the `broadcast` action is `broadcast, <label>, <url>` (e.g. `broadcast, Take picture, extras.cmd=pic`),
+but you can always just use the `<key>=<value>` notation as well (e.g. `action=broadcast, label=Take picture, extras.cmd=pic`).
 
 The `broadcast` action supports the following fields:
 
@@ -2154,7 +2164,7 @@ And the same example using [JSON publishing](#publish-as-json):
         method: 'POST',
         body: JSON.stringify({
             topic: "myhome",
-            message": "Garage door has been open for 15 minutes. Close it?",
+            message: "Garage door has been open for 15 minutes. Close it?",
             actions: [
               {
                 "action": "http",
@@ -2273,6 +2283,9 @@ And the same example using [JSON publishing](#publish-as-json):
     ]));
     ```
 
+The short format for the `http` action is `http, <label>, <url>` (e.g. `http, Close door, https://api.mygarage.lan/close`),
+but you can always just use the `<key>=<value>` notation as well (e.g. `action=http, label=Close door, url=https://api.mygarage.lan/close`).
+
 The `http` action supports the following fields:
 
 | Field     | Required | Type               | Default   | Example                   | Description                                                                                                                                             |
@@ -2284,6 +2297,254 @@ The `http` action supports the following fields:
 | `headers` | -️       | *map of strings*   | -         | *see above*               | HTTP headers to pass in request. When publishing as JSON, headers are passed as a map. When the simple format is used, use `headers.<header1>=<value>`. |
 | `body`    | -️       | *string*           | *empty*   | `some body, somebody?`    | HTTP body                                                                                                                                               |
 | `clear`   | -️       | *boolean*          | `false`   | `true`                    | Clear notification after HTTP request succeeds. If the request fails, the notification is not cleared.                                                  |
+
+### Copy to clipboard
+_Supported on:_ :material-android: :material-firefox:
+
+The `copy` action **copies a given value to the clipboard when the action button is tapped**. This is useful for 
+one-time passcodes, tokens, or any other value you want to quickly copy without opening the full notification.
+
+!!! info
+    The copy action button is only shown in the web app and Android app notification list, **not** in browser desktop
+    notifications. This is because browsers do not allow clipboard access from notification actions without direct 
+    user interaction with the page.
+
+Here's an example using the [`X-Actions` header](#using-a-header):
+
+=== "Command line (curl)"
+    ```
+    curl \
+        -d "Your one-time passcode is 123456" \
+        -H "Actions: copy, Copy code, 123456" \
+        ntfy.sh/myhome
+    ```
+
+=== "ntfy CLI"
+    ```
+    ntfy publish \
+        --actions="copy, Copy code, 123456" \
+        myhome \
+        "Your one-time passcode is 123456"
+    ```
+
+=== "HTTP"
+    ``` http
+    POST /myhome HTTP/1.1
+    Host: ntfy.sh
+    Actions: copy, Copy code, 123456
+
+    Your one-time passcode is 123456
+    ```
+
+=== "JavaScript"
+    ``` javascript
+    fetch('https://ntfy.sh/myhome', {
+        method: 'POST',
+        body: 'Your one-time passcode is 123456',
+        headers: { 
+            'Actions': 'copy, Copy code, 123456' 
+        }
+    })
+    ```
+
+=== "Go"
+    ``` go
+    req, _ := http.NewRequest("POST", "https://ntfy.sh/myhome", strings.NewReader("Your one-time passcode is 123456"))
+    req.Header.Set("Actions", "copy, Copy code, 123456")
+    http.DefaultClient.Do(req)
+    ```
+
+=== "PowerShell"
+    ``` powershell
+    $Request = @{
+      Method = "POST"
+      URI = "https://ntfy.sh/myhome"
+      Headers = @{
+        Actions = "copy, Copy code, 123456"
+      }
+      Body = "Your one-time passcode is 123456"
+    }
+    Invoke-RestMethod @Request
+    ```
+
+=== "Python"
+    ``` python
+    requests.post("https://ntfy.sh/myhome",
+        data="Your one-time passcode is 123456",
+        headers={ "Actions": "copy, Copy code, 123456" })
+    ```
+
+=== "PHP"
+    ``` php-inline
+    file_get_contents('https://ntfy.sh/myhome', false, stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' =>
+                "Content-Type: text/plain\r\n" .
+                "Actions: copy, Copy code, 123456",
+            'content' => 'Your one-time passcode is 123456'
+        ]
+    ]));
+    ```
+
+And the same example using [JSON publishing](#publish-as-json):
+
+=== "Command line (curl)"
+    ```
+    curl ntfy.sh \
+      -d '{
+        "topic": "myhome",
+        "message": "Your one-time passcode is 123456",
+        "actions": [
+          {
+            "action": "copy",
+            "label": "Copy code",
+            "value": "123456"
+          }
+        ]
+      }'
+    ```
+
+=== "ntfy CLI"
+    ```
+    ntfy publish \
+        --actions '[
+            {
+                "action": "copy",
+                "label": "Copy code",
+                "value": "123456"
+            }
+        ]' \
+        myhome \
+        "Your one-time passcode is 123456"
+    ```
+
+=== "HTTP"
+    ``` http
+    POST / HTTP/1.1
+    Host: ntfy.sh
+
+    {
+        "topic": "myhome",
+        "message": "Your one-time passcode is 123456",
+        "actions": [
+          {
+            "action": "copy",
+            "label": "Copy code",
+            "value": "123456"
+          }
+        ]
+    }
+    ```
+
+=== "JavaScript"
+    ``` javascript
+    fetch('https://ntfy.sh', {
+        method: 'POST',
+        body: JSON.stringify({
+            topic: "myhome",
+            message: "Your one-time passcode is 123456",
+            actions: [
+                {
+                    action: "copy",
+                    label: "Copy code",
+                    value: "123456"
+                }
+            ]
+        })
+    })
+    ```
+
+=== "Go"
+    ``` go
+    // You should probably use json.Marshal() instead and make a proper struct,
+    // but for the sake of the example, this is easier.
+    
+    body := `{
+        "topic": "myhome",
+        "message": "Your one-time passcode is 123456",
+        "actions": [
+          {
+            "action": "copy",
+            "label": "Copy code",
+            "value": "123456"
+          }
+        ]
+    }`
+    req, _ := http.NewRequest("POST", "https://ntfy.sh/", strings.NewReader(body))
+    http.DefaultClient.Do(req)
+    ```
+
+=== "PowerShell"
+    ``` powershell
+    $Request = @{
+      Method = "POST"
+      URI = "https://ntfy.sh"
+      Body = ConvertTo-JSON @{
+        Topic = "myhome"
+        Message = "Your one-time passcode is 123456"
+        Actions = @(
+          @{
+            Action = "copy"
+            Label  = "Copy code"
+            Value  = "123456"
+          }
+        )
+      }
+      ContentType = "application/json"
+    }
+    Invoke-RestMethod @Request
+    ```
+
+=== "Python"
+    ``` python
+    requests.post("https://ntfy.sh/",
+        data=json.dumps({
+            "topic": "myhome",
+            "message": "Your one-time passcode is 123456",
+            "actions": [
+                {
+                    "action": "copy",
+                    "label": "Copy code",
+                    "value": "123456"
+                }
+            ]
+        })
+    )
+    ```
+
+=== "PHP"
+    ``` php-inline
+    file_get_contents('https://ntfy.sh/', false, stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/json",
+            'content' => json_encode([
+                "topic": "myhome",
+                "message": "Your one-time passcode is 123456",
+                "actions": [
+                    [
+                        "action": "copy",
+                        "label": "Copy code",
+                        "value": "123456"
+                    ]
+                ]
+            ])
+        ]
+    ]));
+    ```
+
+The short format for the `copy` action is `copy, <label>, <value>` (e.g. `copy, Copy code, 123456`),
+but you can always just use the `<key>=<value>` notation as well (e.g. `action=copy, label=Copy code, value=123456`).
+
+The `copy` action supports the following fields:
+
+| Field    | Required | Type      | Default | Example         | Description                                      |
+|----------|----------|-----------|---------|-----------------|--------------------------------------------------|
+| `action` | ✔️       | *string*  | -       | `copy`          | Action type (**must be `copy`**)                 |
+| `label`  | ✔️       | *string*  | -       | `Copy code`     | Label of the action button in the notification   |
+| `value`  | ✔️       | *string*  | -       | `123456`        | Value to copy to the clipboard                   |
+| `clear`  | -️       | *boolean* | `false` | `true`          | Clear notification after action button is tapped |
 
 ## Scheduled delivery
 _Supported on:_ :material-android: :material-apple: :material-firefox:
@@ -2643,7 +2904,7 @@ You can enable templating by setting the `X-Template` header (or its aliases `Te
   will use a custom template file from the template directory (defaults to `/etc/ntfy/templates`, can be overridden with `template-dir`).
   See [custom templates](#custom-templates) for more details.
 * **Inline templating**: Setting the `X-Template` header or query parameter to `yes` or `1` (e.g. `?template=yes`)
-  will enable inline templating, which means that the `message` and/or `title` will be parsed as a Go template.
+  will enable inline templating, which means that the `message`, `title`, and/or `priority` will be parsed as a Go template.
   See [inline templating](#inline-templating) for more details.
 
 To learn the basics of Go's templating language, please see [template syntax](#template-syntax).
@@ -2686,7 +2947,7 @@ and set the `X-Template` header or query parameter to the name of the template f
 For example, if you have a template file `/etc/ntfy/templates/myapp.yml`, you can set the header `X-Template: myapp` or
 the query parameter `?template=myapp` to use it.
 
-Template files must have the `.yml` (not: `.yaml`!) extension and must be formatted as YAML. They may contain `title` and `message` keys,
+Template files must have the `.yml` (not: `.yaml`!) extension and must be formatted as YAML. They may contain `title`, `message`, and `priority` keys,
 which are interpreted as Go templates.
 
 Here's an **example custom template**:
@@ -2704,6 +2965,11 @@ Here's an **example custom template**:
       Status: {{ .status }}
       Type: {{ .type | upper }} ({{ .percent }}%)
       Server: {{ .server }}
+    priority: |
+      {{ if gt .percent 90.0 }}5
+      {{ else if gt .percent 75.0 }}4
+      {{ else }}3
+      {{ end }}
     ```
 
 Once you have the template file in place, you can send the payload to your topic using the `X-Template`
@@ -2785,7 +3051,7 @@ Which will result in a notification that looks like this:
 
 ### Inline templating
 
-When `X-Template: yes` (aliases: `Template: yes`, `Tpl: yes`) or `?template=yes` is set, you can use Go templates in the `message` and `title` fields of your
+When `X-Template: yes` (aliases: `Template: yes`, `Tpl: yes`) or `?template=yes` is set, you can use Go templates in the `message`, `title`, and `priority` fields of your
 webhook payload. 
 
 Inline templates are most useful for templated one-off messages, or if you do not control the ntfy server (e.g., if you're using ntfy.sh).
@@ -2841,12 +3107,12 @@ Here's an **easier example with a shorter JSON payload**:
     curl \
         --globoff \
         -d '{"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}' \
-        'ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}'
+        'ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}}'
     ```
 
 === "HTTP"
     ``` http
-    POST /mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}} HTTP/1.1
+    POST /mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}} HTTP/1.1
     Host: ntfy.sh
 
     {"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}
@@ -2854,7 +3120,7 @@ Here's an **easier example with a shorter JSON payload**:
 
 === "JavaScript"
     ``` javascript
-    fetch('https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}', {
+    fetch('https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}}', {
         method: 'POST',
         body: '{"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}'
     })
@@ -2863,7 +3129,7 @@ Here's an **easier example with a shorter JSON payload**:
 === "Go"
     ``` go
     body := `{"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}`
-    uri := "https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}"
+    uri := `https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if eq .error.level "severe"}}5{{else}}3{{end}}`
     req, _ := http.NewRequest("POST", uri, strings.NewReader(body))
     http.DefaultClient.Do(req)
     ```
@@ -2873,7 +3139,7 @@ Here's an **easier example with a shorter JSON payload**:
     ``` powershell
     $Request = @{
         Method = "POST"
-        URI = "https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}"
+        URI = 'https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}}'
         Body = '{"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}'
         ContentType = "application/json"
     }
@@ -2883,14 +3149,14 @@ Here's an **easier example with a shorter JSON payload**:
 === "Python"
     ``` python
     requests.post(
-        "https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}",
+        'https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}}',
         data='{"hostname": "phil-pc", "error": {"level": "severe", "desc": "Disk has run out of space"}}'
     )
     ```
 
 === "PHP"
     ``` php-inline
-    file_get_contents("https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}", false, stream_context_create([
+    file_get_contents('https://ntfy.sh/mytopic?tpl=yes&t={{.hostname}}:+A+{{.error.level}}+error+has+occurred&m=Error+message:+{{.error.desc}}&p={{if+eq+.error.level+"severe"}}5{{else}}3{{end}}', false, stream_context_create([
         'http' => [
             'method' => 'POST',
             'header' => "Content-Type: application/json",
@@ -2899,9 +3165,9 @@ Here's an **easier example with a shorter JSON payload**:
     ]));
     ```
 
-This example uses the `message`/`m` and `title`/`t` query parameters, but obviously this also works with the corresponding
-`Message`/`Title` headers. It will send a notification with a title `phil-pc: A severe error has occurred` and a message
-`Error message: Disk has run out of space`.
+This example uses the `message`/`m`, `title`/`t`, and `priority`/`p` query parameters, but obviously this also works with the 
+corresponding headers. It will send a notification with a title `phil-pc: A severe error has occurred`, a message
+`Error message: Disk has run out of space`, and priority `5` (max) if the level is "severe", or `3` (default) otherwise.
 
 ### Template syntax
 ntfy uses [Go templates](https://pkg.go.dev/text/template) for its templates, which is arguably one of the most powerful,
@@ -2920,7 +3186,7 @@ your templates there first ([example for Grafana alert](https://repeatit.io/#/sh
 ntfy supports a subset of the **[Sprig template functions](publish/template-functions.md)** (originally copied from [Sprig](https://github.com/Masterminds/sprig),
 thank you to the Sprig developers 🙏). This is useful for advanced message templating and for transforming the data provided through the JSON payload.
 
-Below are the functions that are available to use inside your message/title templates.
+Below are the functions that are available to use inside your message, title, and priority templates.
 
 * [String Functions](publish/template-functions.md#string-functions): `trim`, `trunc`, `substr`, `plural`, etc.
 * [String List Functions](publish/template-functions.md#string-list-functions): `splitList`, `sortAlpha`, etc.
@@ -2947,11 +3213,17 @@ You can forward messages to e-mail by specifying an address in the header. This 
 you'd like to persist longer, or to blast-notify yourself on all possible channels. 
 
 Usage is easy: Simply pass the `X-Email` header (or any of its aliases: `X-E-mail`, `Email`, `E-mail`, `Mail`, or `e`).
-Only one e-mail address is supported.
+Only one e-mail address is supported. If the server has [`smtp-sender-verify`](config.md#e-mail-notifications) enabled (ntfy.sh has this enabled),
+you can also pass `yes`, `true`, or `1` to send to your first verified email address.
 
-Since ntfy does not provide auth (yet), the rate limiting is pretty strict (see [limitations](#limitations)). In the 
-default configuration, you get **16 e-mails per visitor** (IP address) and then after that one per hour. On top of 
+ntfy allows anonymous email sending (if enabled), so the rate limiting is pretty strict (see [limitations](#limitations)). In the
+default configuration, you get **16 e-mails per visitor** (IP address) and then after that one per hour. On top of
 that, your IP address appears in the e-mail body. This is to prevent abuse.
+
+!!! info
+    On ntfy.sh, anonymous email sending was disabled due to abuse. To use the email notification feature,
+    you must verify your email in the web app's [Account section](https://ntfy.sh/account). The daily limit for
+    free users is **5 emails per visitor per day**.
 
 === "Command line (curl)"
     ```
@@ -3392,7 +3664,7 @@ all the supported fields:
 | `icon`        | -        | *string*                         | `https://example.com/icon.png`            | URL to use as notification [icon](#icons)                                                 |
 | `filename`    | -        | *string*                         | `file.jpg`                                | File name of the attachment                                                               |
 | `delay`       | -        | *string*                         | `30min`, `9am`                            | Timestamp or duration for delayed delivery                                                |
-| `email`       | -        | *e-mail address*                 | `phil@example.com`                        | E-mail address for e-mail notifications                                                   |
+| `email`       | -        | *e-mail address or 'yes'*        | `phil@example.com` or `yes`               | E-mail address for e-mail notifications, or `yes` to use first verified address           |
 | `call`        | -        | *phone number or 'yes'*          | `+1222334444` or `yes`                    | Phone number to use for [voice call](#phone-calls)                                        |
 | `sequence_id` | -        | *string*                         | `my-sequence-123`                         | Sequence ID for [updating/deleting notifications](#updating-deleting-notifications)   |
 
@@ -4605,7 +4877,7 @@ table in their canonical form.
 | `X-Markdown`    | `Markdown`, `md`                           | Enable [Markdown formatting](#markdown-formatting) in the notification body                   |
 | `X-Icon`        | `Icon`                                     | URL to use as notification [icon](#icons)                                                     |
 | `X-Filename`    | `Filename`, `file`, `f`                    | Optional [attachment](#attachments) filename, as it appears in the client                     |
-| `X-Email`       | `X-E-Mail`, `Email`, `E-Mail`, `mail`, `e` | E-mail address for [e-mail notifications](#e-mail-notifications)                              |
+| `X-Email`       | `X-E-Mail`, `Email`, `E-Mail`, `mail`, `e` | E-mail address (or `yes`) for [e-mail notifications](#e-mail-notifications)                   |
 | `X-Call`        | `Call`                                     | Phone number for [phone calls](#phone-calls)                                                  |
 | `X-Cache`       | `Cache`                                    | Allows disabling [message caching](#message-caching)                                          |
 | `X-Firebase`    | `Firebase`                                 | Allows disabling [sending to Firebase](#disable-firebase)                                     |

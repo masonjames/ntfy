@@ -4,12 +4,14 @@ import { Typography, TextField, Button, Box, IconButton, InputAdornment } from "
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Visibility, VisibilityOff } from "@mui/icons-material";
+import Visibility from "@mui/icons-material/Visibility";
+import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import accountApi from "../app/AccountApi";
 import AvatarBox from "./AvatarBox";
 import session from "../app/Session";
 import routes from "./routes";
 import { UnauthorizedError } from "../app/errors";
+import { fadeReload } from "../app/transition";
 
 const Login = () => {
   const { t } = useTranslation();
@@ -25,7 +27,7 @@ const Login = () => {
       const token = await accountApi.login(user);
       console.log(`[Login] User auth for user ${user.username} successful, token is ${token}`);
       await session.store(user.username, token);
-      window.location.href = routes.app;
+      fadeReload(routes.app);
     } catch (e) {
       console.log(`[Login] User auth for user ${user.username} failed`, e);
       if (e instanceof UnauthorizedError) {
@@ -66,21 +68,23 @@ const Login = () => {
           type={showPassword ? "text" : "password"}
           id="password"
           value={password}
-          onChange={(ev) => setPassword(ev.target.value.trim())}
+          onChange={(ev) => setPassword(ev.target.value)}
           autoComplete="current-password"
-          InputProps={{
-            endAdornment: (
-              <InputAdornment position="end">
-                <IconButton
-                  aria-label={t("signup_form_toggle_password_visibility")}
-                  onClick={() => setShowPassword(!showPassword)}
-                  onMouseDown={(ev) => ev.preventDefault()}
-                  edge="end"
-                >
-                  {showPassword ? <VisibilityOff /> : <Visibility />}
-                </IconButton>
-              </InputAdornment>
-            ),
+          slotProps={{
+            input: {
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    aria-label={t("signup_form_toggle_password_visibility")}
+                    onClick={() => setShowPassword(!showPassword)}
+                    onMouseDown={(ev) => ev.preventDefault()}
+                    edge="end"
+                  >
+                    {showPassword ? <VisibilityOff /> : <Visibility />}
+                  </IconButton>
+                </InputAdornment>
+              ),
+            },
           }}
         />
         <Button type="submit" fullWidth variant="contained" disabled={username === "" || password === ""} sx={{ mt: 2, mb: 2 }}>
@@ -100,7 +104,13 @@ const Login = () => {
           </Box>
         )}
         <Box sx={{ width: "100%" }}>
-          {/* This is where the password reset link would go */}
+          {config.enable_reset_password && (
+            <div style={{ float: "left" }}>
+              <NavLink to={routes.passwordResetRequest} variant="body1">
+                {t("login_link_forgot_password")}
+              </NavLink>
+            </div>
+          )}
           {config.enable_signup && (
             <div style={{ float: "right" }}>
               <NavLink to={routes.signup} variant="body1">

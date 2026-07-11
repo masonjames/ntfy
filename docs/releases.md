@@ -4,15 +4,74 @@ and the [ntfy Android app](https://github.com/binwiederhier/ntfy-android/release
 
 ## Current stable releases
 
-| Component        | Version | Release date |
-|------------------|---------|--------------|
-| ntfy server      | v2.24.0 | June 4, 2026 |
-| ntfy Android app | v1.24.0 | Mar 5, 2026  |
-| ntfy iOS app     | v1.7.0  | May 30, 2026 |
+| Component        | Version | Release date  |
+|------------------|---------|---------------|
+| ntfy server      | v2.26.0 | July 9, 2026  |
+| ntfy Android app | v1.24.0 | Mar 5, 2026   |
+| ntfy iOS app     | v1.7.0  | May 30, 2026  |
 
 Please check out the release notes for [upcoming releases](#not-released-yet) below.
 
-### ntfy server v2.24.0
+### ntfy server v2.26.0
+Released July 9, 2026
+
+This release hardens **message templates**, which are now executed with a hard-capped execution timeout. This closes
+a denial-of-service hole.
+
+On the web app side, it adds configurable **date and time formats**, a smoother loading and page-transition experience,
+and a fix that strips unsafe URL protocols from rendered Markdown.
+
+**Security:**
+
+* Prevent a CPU denial of service via message templates (`Template: yes`) ([#1826](https://github.com/binwiederhier/ntfy/pull/1826), thanks to [@alanturing881](https://github.com/alanturing881) for reporting)
+
+**Features:**
+
+* Web app: Add "Date format" and "Time format" settings (Settings -> Appearance), with ISO 8601, day/month/year (slash or dot) and month/day/year date options and a 12-/24-hour clock option, and base the default format on your browser/system locale rather than the selected display language. When logged in, both settings sync across devices via your account ([#1647](https://github.com/binwiederhier/ntfy/issues/1647), thanks to [@wsw70](https://github.com/wsw70) for reporting)
+
+**Bug fixes + maintenance:**
+
+* Web app: Smooth transitions and loading animation, remove flickering
+* Web app: `GET /account` now reads from the primary database instead of a read replica, so the account view no longer shows stale data right after a change when replicas lag behind
+* Docs: Document the third-party HelmForge Helm chart as a Kubernetes installation option ([#1727](https://github.com/binwiederhier/ntfy/issues/1727), thanks to [@mberlofa](https://github.com/mberlofa))
+* Web app: Strip unsafe URL protocols (`javascript:`, `data:`, ...) from links and images in Markdown-rendered messages, so they no longer trigger an uncaught "React has blocked a javascript: URL" error (thanks to [@jvoisin](https://github.com/jvoisin) for reporting)
+
+## ntfy server v2.25.0
+Released June 24, 2026
+
+This release adds **password reset** via email, and reworks email verification to use durable,
+link-based magic links (replacing the old in-memory 6-digit codes). Email stays optional at
+signup; a user can reset their password only once they have a verified "primary" (recovery)
+email.
+
+All of this work is probably not useful for self-hosters, but it hopefully will be useful for me,
+since I do have to reset accounts on a regular basis.
+
+**Security issues:**
+
+* Generate access tokens, IDs, and magic-link tokens with a cryptographically secure RNG (`crypto/rand`) instead of a clock-seeded PRNG
+
+**Features:**
+
+* Add password reset via emailed magic link, with a "Forgot password" link on the login page and a `ntfy user reset-pass` CLI command for admins
+* Rework email verification to use durable, single-use, expiring magic links instead of in-memory 6-digit codes, and add a "primary" email (used for account recovery and as the `X-Email: yes` target) with verified/unverified state in the account UI
+* You can now clear/read messages and delete messages with a GET request ([#1771](https://github.com/binwiederhier/ntfy/issues/1771), thanks to [@lemmi](https://github.com/lemmi) for reporting and to [@wunter8](https://github.com/wunter8) for implementing)
+* Add a reload button to the web app's action bar when running as an installed PWA, which clears the service worker caches and hard-refreshes the app ([#1281](https://github.com/binwiederhier/ntfy/issues/1281), thanks to [@leanza](https://github.com/leanza) for reporting)
+* Add a "Back to app" link to the web app's login, signup, and password-reset pages (alongside the existing links), which previously had no way back to the app
+
+**Bug fixes + maintenance:**
+
+* `X-Email: yes` (also `true`/`1`) now sends to your primary verified email regardless of the `smtp-sender-verify` setting (previously it was rejected unless verification was enabled); it requires being logged in with a verified address
+* Grant users full access to their own sync topic (`st_...`) so cross-device subscription sync works under `auth-default-access: deny-all` ([#733](https://github.com/binwiederhier/ntfy/issues/733), [#1795](https://github.com/binwiederhier/ntfy/pull/1795), thanks to [@lmorchard](https://github.com/lmorchard) for the contribution)
+* Support HTTP (non-TLS) S3-compatible endpoints by preserving the endpoint scheme, e.g. for a local MinIO instance ([#1794](https://github.com/binwiederhier/ntfy/pull/1794), [#1734](https://github.com/binwiederhier/ntfy/issues/1734), thanks to [@sskender](https://github.com/sskender) for the contribution, and [@Kernald](https://github.com/Kernald) for reporting)
+* Stop silently stripping spaces from passwords while typing in the web app's login, signup, and password-reset forms ([#1246](https://github.com/binwiederhier/ntfy/issues/1246), thanks to [@aldem](https://github.com/aldem) for reporting)
+* Update web app dependencies, including major-version upgrades to Vite (6 -> 8, now Rolldown-based), Material UI (5 -> 9), and Dexie (3 -> 4) ([#1800](https://github.com/binwiederhier/ntfy/pull/1800), [#1764](https://github.com/binwiederhier/ntfy/pull/1764), [#1767](https://github.com/binwiederhier/ntfy/pull/1767), [#1762](https://github.com/binwiederhier/ntfy/pull/1762), [#1766](https://github.com/binwiederhier/ntfy/pull/1766), [#1765](https://github.com/binwiederhier/ntfy/pull/1765), thanks Dependabot)
+* Play notification sounds in the web app even when the Notification API is unavailable, e.g. over plain HTTP or in browsers without notification support ([#1772](https://github.com/binwiederhier/ntfy/pull/1772), thanks to [@mitya12342](https://github.com/mitya12342) for the contribution)
+* Stop escaping `<`, `>`, and `&` as `\u003c`/`\u003e`/`\u0026` in JSON responses ([#1511](https://github.com/binwiederhier/ntfy/issues/1511), [#1512](https://github.com/binwiederhier/ntfy/pull/1512), thanks to [@wunter8](https://github.com/wunter8) for the contribution)
+* Fix the web app navbar not reflecting a topic reservation (lock icon, and "Reserve topic" -> "Change reservation"/"Remove reservation" menu) until a page reload, by persisting reservation and display-name changes onto already-subscribed topics during account sync
+* Reduce the web app's initial bundle size by ~300 KB (~50 KB gzipped) by lazy-loading the emoji picker dataset and the Markdown renderer, and by importing Material UI icons individually
+
+## ntfy server v2.24.0
 Released June 4, 2026
 
 The main feature for this release is an in-memory ACL cache (`auth-access-cache`) that can help bring down the read load
@@ -1948,13 +2007,14 @@ and the [ntfy Android app](https://github.com/binwiederhier/ntfy-android/release
 
 ## Not released yet
 
-### ntfy Android v1.25.x (UNRELEASED)
+### ntfy Android v1.25.2 (UNRELEASED)
 
 This release makes the "connection lost" alert configurable and turns it off by default. Folks did not like it and many reached out
 or even gave ntfy bad reviews. I heard you! You can re-enable the alert in the advanced settings.
 
 The release also tries to be smarter about not retrying the connection at all if the app is in flight mode, or has no network. If there
-is no network, ntfy will now stop the foreground service entirely.
+is no network, ntfy now keeps the foreground service alive and shows a "Waiting for network" notification, then resumes automatically
+once connectivity returns.
 
 Another change related to the networking is that we now force-reconnect when the connection is changed, e.g. during transitions
 from Wi-Fi to cellular network, or vice versa. That should allow for faster transitions during hand-overs.
@@ -1964,16 +2024,19 @@ especially when paired with increaseing the server-side `keepalive-interval` in 
 
 **Features:**
 
-* Add configurable "Alert when connection is lost" setting ([#1665](https://github.com/binwiederhier/ntfy/issues/1665), [#1662](https://github.com/binwiederhier/ntfy/issues/1662), [#1652](https://github.com/binwiederhier/ntfy/issues/1652), [#1655](https://github.com/binwiederhier/ntfy/issues/1655), thanks to [@tintamarre](https://github.com/tintamarre), [@sjozs](https://github.com/sjozs), [@TheRealOne78](https://github.com/TheRealOne78), and [@DAE51D](https://github.com/DAE51D) for reporting)
-* Suppress connection alerts and stop foreground service when there is no network ([ntfy-android#165](https://github.com/binwiederhier/ntfy-android/pull/165), thanks to [@tintamarre](https://github.com/tintamarre) for the contribution)
-* Restart the foreground service immediately when network returns, even if the app process was killed while offline
+* Add configurable "Alert when connection is lost" setting, turned off by default ([#1665](https://github.com/binwiederhier/ntfy/issues/1665), [#1662](https://github.com/binwiederhier/ntfy/issues/1662), [#1652](https://github.com/binwiederhier/ntfy/issues/1652), [#1655](https://github.com/binwiederhier/ntfy/issues/1655), thanks to [@tintamarre](https://github.com/tintamarre), [@sjozs](https://github.com/sjozs), [@TheRealOne78](https://github.com/TheRealOne78), and [@DAE51D](https://github.com/DAE51D) for reporting)
+* Handle "no network" gracefully: when the device is offline or in airplane mode, ntfy now stops retrying, suppresses the connection-lost alert, and keeps the foreground service alive with a "Waiting for network" notification, resuming instant delivery automatically when connectivity returns ([ntfy-android#165](https://github.com/binwiederhier/ntfy-android/pull/165), thanks to [@tintamarre](https://github.com/tintamarre) for the contribution, and [#1709](https://github.com/binwiederhier/ntfy/issues/1709), thanks to [@isaitgirl](https://github.com/isaitgirl) for reporting)
 * Improve battery life by increasing WebSocket client ping interval from 1 min to 3 min, and reconnect instantly on Wi-Fi/cellular/VPN transitions ([ntfy-android#113](https://github.com/binwiederhier/ntfy-android/pull/113), thanks to [@ftilde](https://github.com/ftilde) for the investigation)
 * Disable UnifiedPush components when UnifiedPush is disabled in settings ([ntfy-android#168](https://github.com/binwiederhier/ntfy-android/pull/168), thanks to [@p1gp1g](https://github.com/p1gp1g) for the contribution)
 
 **Bug fixes + maintenance:**
 
+* Fix the "connection lost" alert briefly disappearing and re-firing when roaming between networks (e.g. Wi-Fi to cellular), by no longer cancelling it during the transient no-network gap of a handover
+* Fix the "connection lost" alert repeatedly waking the screen while a server stayed unreachable, by no longer re-posting the alert once it is already showing
+* Fix the "connection lost" alert firing late, erratically, or not at all when a connection kept dropping (e.g. a flaky server) rather than being refused outright, by tracking how long the connection has been down independently of whether the drop warrants a UI error
 * Undo automatic phone number linking for numbers in message body ([ntfy-android#170](https://github.com/binwiederhier/ntfy-android/pull/170), thanks to [@acortelyou](https://github.com/acortelyou) for the contribution)
 * Fix subscription icons disappearing after a few days due to Android clearing cache ([#1322](https://github.com/binwiederhier/ntfy/issues/1322), thanks to [@mcanning](https://github.com/mcanning) for reporting)
+* Fix UnifiedPush `failed_reason` being sent as an enum instead of a string, which caused an exception in receiving apps that read it as a string extra ([ntfy-android#182](https://github.com/binwiederhier/ntfy-android/pull/182), thanks to [@p1gp1g](https://github.com/p1gp1g) for the contribution)
 
 ### ntfy iOS app v1.8.0 (UNRELEASED)
 

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useRef, useState } from "react";
 import { Typography, Box, TextField, ClickAwayListener, Fade, InputAdornment, styled, IconButton, Popper } from "@mui/material";
-import { Close } from "@mui/icons-material";
+import Close from "@mui/icons-material/Close";
 import { useTranslation } from "react-i18next";
 import { splitNoEmpty } from "../app/utils";
 import { rawEmojis } from "../app/emojis";
@@ -71,18 +71,20 @@ const EmojiPicker = (props) => {
                 variant="standard"
                 fullWidth
                 sx={{ marginTop: 0, marginBottom: "12px", paddingRight: 2 }}
-                inputProps={{
-                  role: "searchbox",
-                  "aria-label": t("emoji_picker_search_placeholder"),
-                }}
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end" sx={{ display: search ? "" : "none" }}>
-                      <IconButton size="small" onClick={handleSearchClear} edge="end" aria-label={t("emoji_picker_search_clear")}>
-                        <Close />
-                      </IconButton>
-                    </InputAdornment>
-                  ),
+                slotProps={{
+                  htmlInput: {
+                    role: "searchbox",
+                    "aria-label": t("emoji_picker_search_placeholder"),
+                  },
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end" sx={{ display: search ? "" : "none" }}>
+                        <IconButton size="small" onClick={handleSearchClear} edge="end" aria-label={t("emoji_picker_search_clear")}>
+                          <Close />
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  },
                 }}
               />
               <Box

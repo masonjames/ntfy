@@ -19,32 +19,32 @@ import {
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import {
-  Clear,
-  ClearAll,
-  Edit,
-  EnhancedEncryption,
-  Lock,
-  LockOpen,
-  Notifications,
-  NotificationsOff,
-  RemoveCircle,
-  Send,
-} from "@mui/icons-material";
+import Clear from "@mui/icons-material/Clear";
+import ClearAll from "@mui/icons-material/ClearAll";
+import Edit from "@mui/icons-material/Edit";
+import EnhancedEncryption from "@mui/icons-material/EnhancedEncryption";
+import Lock from "@mui/icons-material/Lock";
+import LockOpen from "@mui/icons-material/LockOpen";
+import Notifications from "@mui/icons-material/Notifications";
+import NotificationsOff from "@mui/icons-material/NotificationsOff";
+import RemoveCircle from "@mui/icons-material/RemoveCircle";
+import Send from "@mui/icons-material/Send";
 import subscriptionManager from "../app/SubscriptionManager";
 import DialogFooter from "./DialogFooter";
 import accountApi, { Role } from "../app/AccountApi";
 import session from "../app/Session";
 import routes from "./routes";
 import PopupMenu from "./PopupMenu";
-import { formatShortDateTime, shuffle } from "../app/utils";
+import { formatDateTime, shuffle } from "../app/utils";
 import api from "../app/Api";
-import { AccountContext } from "./App";
+import AccountContext from "./AccountContext";
+import { usePrefCache } from "./PrefCache";
 import { ReserveAddDialog, ReserveDeleteDialog, ReserveEditDialog } from "./ReserveDialogs";
 import { UnauthorizedError } from "../app/errors";
 
 export const SubscriptionPopup = (props) => {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat } = usePrefCache();
   const { account } = useContext(AccountContext);
   const navigate = useNavigate();
   const [displayNameDialogOpen, setDisplayNameDialogOpen] = useState(false);
@@ -117,15 +117,17 @@ export const SubscriptionPopup = (props) => {
     ])[0];
     const nowSeconds = Math.round(Date.now() / 1000);
     const message = shuffle([
-      `Hello friend, this is a test notification from ntfy web. It's ${formatShortDateTime(
+      `Hello friend, this is a test notification from ntfy web. It's ${formatDateTime(
         nowSeconds,
-        "en-US"
+        dateFormat,
+        timeFormat,
       )} right now. Is that early or late?`,
       `So I heard you like ntfy? If that's true, go to GitHub and star it, or to the Play store and rate it. Thanks! Oh yeah, this is a test notification.`,
       `It's almost like you want to hear what I have to say. I'm not even a machine. I'm just a sentence that Phil typed on a random Thursday.`,
-      `Alright then, it's ${formatShortDateTime(
+      `Alright then, it's ${formatDateTime(
         nowSeconds,
-        "en-US"
+        dateFormat,
+        timeFormat,
       )} already. Boy oh boy, where did the time go? I hope you're alright, friend.`,
       `There are nine million bicycles in Beijing That's a fact; It's a thing we can't deny. I wonder if that's true ...`,
       `I'm really excited that you're trying out ntfy. Did you know that there are a few public topics, such as ntfy.sh/stats and ntfy.sh/announcements.`,
@@ -326,18 +328,20 @@ const DisplayNameDialog = (props) => {
           type="text"
           fullWidth
           variant="standard"
-          inputProps={{
-            maxLength: 64,
-            "aria-label": t("display_name_dialog_placeholder"),
-          }}
-          InputProps={{
-            endAdornment: (
-              <InputAdornment position="end">
-                <IconButton onClick={() => setDisplayName("")} edge="end">
-                  <Clear />
-                </IconButton>
-              </InputAdornment>
-            ),
+          slotProps={{
+            htmlInput: {
+              maxLength: 64,
+              "aria-label": t("display_name_dialog_placeholder"),
+            },
+            input: {
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton onClick={() => setDisplayName("")} edge="end">
+                    <Clear />
+                  </IconButton>
+                </InputAdornment>
+              ),
+            },
           }}
         />
       </DialogContent>

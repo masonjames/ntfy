@@ -11,11 +11,11 @@ class Notifier {
   lastSoundPlayedAt = 0;
 
   async notify(subscription, notification) {
+    await this.playSound();
+
     if (!this.supported()) {
       return;
     }
-
-    await this.playSound();
 
     const shortUrl = topicShortUrl(subscription.baseUrl, subscription.topic);
     const defaultTitle = topicDisplayName(subscription);
@@ -30,7 +30,7 @@ class Notifier {
         topicRoute: new URL(routes.forSubscription(subscription), window.location.origin).toString(),
         baseUrl: subscription.baseUrl,
         topic: subscription.topic,
-      })
+      }),
     );
   }
 

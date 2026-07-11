@@ -17,25 +17,13 @@ import {
   Button,
 } from "@mui/material";
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import CheckIcon from "@mui/icons-material/Check";
 import CloseIcon from "@mui/icons-material/Close";
-import { useLiveQuery } from "dexie-react-hooks";
 import InfiniteScroll from "react-infinite-scroll-component";
 import { Trans, useTranslation } from "react-i18next";
 import { useOutletContext } from "react-router-dom";
-import { useRemark } from "react-remark";
-import styled from "@emotion/styled";
-import {
-  copyToClipboard,
-  formatBytes,
-  formatShortDateTime,
-  maybeActionErrors,
-  openUrl,
-  shortUrl,
-  topicUrl,
-  unmatchedTags,
-} from "../app/utils";
+import { copyToClipboard, formatBytes, formatDateTime, maybeActionErrors, openUrl, shortUrl, topicUrl, unmatchedTags } from "../app/utils";
 import { ACTION_BROADCAST, ACTION_COPY, ACTION_HTTP, ACTION_VIEW } from "../app/actions";
 import { formatMessage, formatTitle, isImage } from "../app/notificationUtils";
 import { LightboxBackdrop, Paragraph, VerticallyCenteredContainer } from "./styles";
@@ -48,6 +36,7 @@ import priority5 from "../img/priority-5.svg";
 import logoOutline from "../img/ntfy-outline.svg";
 import AttachmentIcon from "./AttachmentIcon";
 import { useAutoSubscribe } from "./hooks";
+import { usePrefCache } from "./PrefCache";
 
 const priorityFiles = {
   1: priority1,
@@ -57,28 +46,25 @@ const priorityFiles = {
 };
 
 export const AllSubscriptions = () => {
-  const { subscriptions } = useOutletContext();
-  if (!subscriptions) {
-    return <Loading />;
+  // allNotifications is preloaded in Layout, so this view has its data on mount (no empty frame on switch).
+  const { subscriptions, allNotifications } = useOutletContext();
+  if (!subscriptions || allNotifications === null || allNotifications === undefined) {
+    return <DeferredLoading />;
   }
-  return <AllSubscriptionsList subscriptions={subscriptions} />;
+  return <AllSubscriptionsList subscriptions={subscriptions} notifications={allNotifications} />;
 };
 
 export const SingleSubscription = () => {
-  const { subscriptions, selected } = useOutletContext();
+  const { subscriptions, selected, allNotifications } = useOutletContext();
   useAutoSubscribe(subscriptions, selected);
-  if (!selected) {
-    return <Loading />;
+  if (!selected || allNotifications === null || allNotifications === undefined) {
+    return <DeferredLoading />;
   }
-  return <SingleSubscriptionList subscription={selected} />;
+  return <SingleSubscriptionList subscription={selected} allNotifications={allNotifications} />;
 };
 
 const AllSubscriptionsList = (props) => {
-  const { subscriptions } = props;
-  const notifications = useLiveQuery(() => subscriptionManager.getAllNotifications(), []);
-  if (notifications === null || notifications === undefined) {
-    return <Loading />;
-  }
+  const { subscriptions, notifications } = props;
   if (subscriptions.length === 0) {
     return <NoSubscriptions />;
   }
@@ -89,11 +75,13 @@ const AllSubscriptionsList = (props) => {
 };
 
 const SingleSubscriptionList = (props) => {
-  const { subscription } = props;
-  const notifications = useLiveQuery(() => subscriptionManager.getNotifications(subscription.id), [subscription]);
-  if (notifications === null || notifications === undefined) {
-    return <Loading />;
-  }
+  const { subscription, allNotifications } = props;
+  // Filter the preloaded allNotifications instead of a per-topic query (getNotifications(id) ==
+  // getAllNotifications() filtered by id), so topic switches are instant.
+  const notifications = useMemo(
+    () => allNotifications.filter((notification) => notification.subscriptionId === subscription.id),
+    [allNotifications, subscription.id],
+  );
   if (notifications.length === 0) {
     return <NoNotifications subscription={subscription} />;
   }
@@ -116,7 +104,7 @@ const NotificationList = (props) => {
         main.scrollTo(0, 0);
       }
     },
-    [props.id]
+    [props.id],
   );
 
   return (
@@ -172,73 +160,29 @@ const autolink = (s) => {
   return <>{parts}</>;
 };
 
-const MarkdownContainer = styled("div")`
-  line-height: 1;
-
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6,
-  p,
-  pre,
-  ul,
-  ol,
-  blockquote {
-    margin: 0;
-  }
-
-  p {
-    line-height: 1.5;
-  }
-
-  blockquote,
-  pre {
-    border-radius: 3px;
-    background: ${(props) => (props.theme.palette.mode === "light" ? "#f5f5f5" : "#333")};
-  }
-
-  pre {
-    overflow-x: scroll;
-    padding: 0.9rem;
-  }
-
-  ul,
-  ol,
-  blockquote {
-    padding-inline: 1rem;
-  }
-
-  img {
-    max-width: 100%;
-  }
-`;
-
-const MarkdownContent = ({ content }) => {
-  const [reactContent, setMarkdownSource] = useRemark();
-
-  useEffect(() => {
-    setMarkdownSource(content);
-  }, [content]);
-
-  return <MarkdownContainer>{reactContent}</MarkdownContainer>;
-};
+// Loaded lazily so the heavy react-remark/unified markdown stack is only fetched when a
+// text/markdown notification is actually rendered (see MarkdownContent.jsx).
+const MarkdownContent = lazy(() => import("./MarkdownContent"));
 
 const NotificationBody = ({ notification }) => {
   const displayAsMarkdown = notification.content_type === "text/markdown";
   const formatted = formatMessage(notification);
   if (displayAsMarkdown) {
-    return <MarkdownContent content={formatted} />;
+    return (
+      <Suspense fallback={null}>
+        <MarkdownContent content={formatted} />
+      </Suspense>
+    );
   }
   return autolink(formatted);
 };
 
 const NotificationItem = (props) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
+  const { dateFormat, timeFormat } = usePrefCache();
   const { notification } = props;
   const { attachment } = notification;
-  const date = formatShortDateTime(notification.time, i18n.language);
+  const date = formatDateTime(notification.time, dateFormat, timeFormat);
   const otherTags = unmatchedTags(notification.tags);
   const tags = otherTags.length > 0 ? otherTags.join(", ") : null;
   const handleDelete = async () => {
@@ -354,7 +298,8 @@ const NotificationItem = (props) => {
 };
 
 const Attachment = (props) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
+  const { dateFormat, timeFormat } = usePrefCache();
   const { attachment } = props;
   const expired = attachment.expires && attachment.expires < Date.now() / 1000;
   const expires = attachment.expires && attachment.expires > Date.now() / 1000;
@@ -373,8 +318,8 @@ const Attachment = (props) => {
   if (expires) {
     infos.push(
       t("notifications_attachment_link_expires", {
-        date: formatShortDateTime(attachment.expires, i18n.language),
-      })
+        date: formatDateTime(attachment.expires, dateFormat, timeFormat),
+      }),
     );
   }
   if (expired) {
@@ -462,7 +407,7 @@ const Image = (props) => {
           cursor: "pointer",
         }}
       />
-      <Modal open={open} onClose={() => setOpen(false)} BackdropComponent={LightboxBackdrop}>
+      <Modal open={open} onClose={() => setOpen(false)} slots={{ backdrop: LightboxBackdrop }}>
         <Fade in={open}>
           <Box
             component="img"
@@ -715,4 +660,15 @@ const Loading = () => {
       </Typography>
     </VerticallyCenteredContainer>
   );
+};
+
+// Render nothing until a load takes at least `delayMs`, so the centered spinner only shows on
+// genuinely slow loads -- normal sub-frame IndexedDB reads don't flash it on every remount.
+const DeferredLoading = ({ delayMs = 250 }) => {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setShow(true), delayMs);
+    return () => clearTimeout(timer);
+  }, [delayMs]);
+  return show ? <Loading /> : null;
 };

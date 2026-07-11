@@ -135,18 +135,28 @@ This fork is deployed to `ntfy.masonjames.com` via GHCR and Dokploy.
 - **Build**: GitHub Actions on push to main (`.github/workflows/ghcr-build.yml`)
 - **Dockerfile**: `Dockerfile-build` (multi-stage build)
 
-### Automatic Deployment
+### Automated release model
 
-1. Push to `main` branch
-2. GitHub Actions builds and pushes to GHCR
-3. Image available at `ghcr.io/masonjames/ntfy:latest`
+1. The weekly upstream workflow cleanly merges `binwiederhier/ntfy/main` into a
+   review branch and opens a PR. Conflicts create an assigned issue instead of
+   modifying a shared checkout.
+2. Upstream build/test workflows and Mason automation checks must pass on the
+   PR.
+3. A main-branch build uses the pinned platform reusable workflow to publish
+   an SBOM, provenance attestation, vulnerability evidence, source-SHA tags,
+   and an immutable GHCR digest. It does not publish `latest`.
+4. Routine production promotion runs only in the Sunday 03:00
+   America/New_York maintenance hour. An explicit workflow dispatch may be
+   used for a security release.
+5. The root-owned `ntfy-release` actuator verifies starting-state equality,
+   stops ntfy for consistent cache/auth volume archives, deploys the digest,
+   verifies health and an authenticated publish/poll probe, and restores the
+   previous image and data automatically on failure.
 
 ### Manual Update on Server
 
 ```bash
-ssh root@platform-core "cd /etc/dokploy/compose/system-apps-ntfy-agehfb/code && \
-  docker compose pull && \
-  docker compose up -d --force-recreate"
+gh workflow run ghcr-build.yml --repo masonjames/ntfy -f deploy=true
 ```
 
 ### Verify Deployment
@@ -167,4 +177,5 @@ The server runs with:
 
 Full deployment details in platform-infra repo:
 - `docs/services/ntfy.md` - Service documentation
-- `docs/runbooks/workflows/ghcr-github-actions.md` - GHCR deployment guide
+- `docs/runbooks/workflows/ntfy-immutable-release.md` - Immutable deployment,
+  backup, verification, and rollback contract

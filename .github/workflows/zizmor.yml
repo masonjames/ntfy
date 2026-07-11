@@ -23,4 +23,10 @@ jobs:
         with:
           persist-credentials: false
       - name: zizmor-action
-        uses: zizmorcore/zizmor-action@v0.5.3
+        uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e
+        with:
+          advanced-security: false
+          min-severity: high
+          online-audits: false
+      - name: Verify Mason release automation contracts
+        run: python3 scripts/test-mason-automation.py

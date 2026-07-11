@@ -26,7 +26,7 @@ import session from "../app/Session";
 import routes from "./routes";
 import accountApi, { Permission, Role } from "../app/AccountApi";
 import ReserveTopicSelect from "./ReserveTopicSelect";
-import { AccountContext } from "./App";
+import AccountContext from "./AccountContext";
 import { TopicReservedError, UnauthorizedError } from "../app/errors";
 import { ReserveLimitChip } from "./SubscriptionPopup";
 import prefs from "../app/Prefs";
@@ -34,7 +34,7 @@ import prefs from "../app/Prefs";
 const publicBaseUrl = "https://ntfy.sh";
 
 export const subscribeTopic = async (baseUrl, topic, opts) => {
-  const subscription = await subscriptionManager.add(baseUrl, topic, opts);
+  const subscription = await subscriptionManager.upsert(baseUrl, topic, opts);
   if (session.exists()) {
     try {
       await accountApi.addSubscription(baseUrl, topic);
@@ -93,7 +93,7 @@ const SubscribePage = (props) => {
   const { topic } = props;
   const existingTopicUrls = props.subscriptions.map((s) => topicUrl(s.baseUrl, s.topic));
   const existingBaseUrls = Array.from(new Set([publicBaseUrl, ...props.subscriptions.map((s) => s.baseUrl)])).filter(
-    (s) => s !== config.base_url
+    (s) => s !== config.base_url,
   );
   const showReserveTopicCheckbox = config.enable_reservations && !anotherServerVisible && (config.enable_payments || account);
   const reserveTopicEnabled =
@@ -113,7 +113,7 @@ const SubscribePage = (props) => {
         setError(
           t("subscribe_dialog_error_user_not_authorized", {
             username,
-          })
+          }),
         );
         return;
       }
@@ -179,9 +179,11 @@ const SubscribePage = (props) => {
             type="text"
             fullWidth
             variant="standard"
-            inputProps={{
-              maxLength: 64,
-              "aria-label": t("subscribe_dialog_subscribe_topic_placeholder"),
+            slotProps={{
+              htmlInput: {
+                maxLength: 64,
+                "aria-label": t("subscribe_dialog_subscribe_topic_placeholder"),
+              },
             }}
           />
           <Button
@@ -202,8 +204,10 @@ const SubscribePage = (props) => {
                   disabled={!reserveTopicEnabled}
                   checked={reserveTopicVisible}
                   onChange={(ev) => setReserveTopicVisible(ev.target.checked)}
-                  inputProps={{
-                    "aria-label": t("reserve_dialog_checkbox_label"),
+                  slotProps={{
+                    input: {
+                      "aria-label": t("reserve_dialog_checkbox_label"),
+                    },
                   }}
                 />
               }
@@ -224,8 +228,10 @@ const SubscribePage = (props) => {
                 <Switch
                   onChange={handleUseAnotherChanged}
                   checked={anotherServerVisible}
-                  inputProps={{
-                    "aria-label": t("subscribe_dialog_subscribe_use_another_label"),
+                  slotProps={{
+                    input: {
+                      "aria-label": t("subscribe_dialog_subscribe_use_another_label"),
+                    },
                   }}
                 />
               }
@@ -303,8 +309,10 @@ const LoginPage = (props) => {
           type="text"
           fullWidth
           variant="standard"
-          inputProps={{
-            "aria-label": t("subscribe_dialog_login_username_label"),
+          slotProps={{
+            htmlInput: {
+              "aria-label": t("subscribe_dialog_login_username_label"),
+            },
           }}
         />
         <TextField
@@ -316,8 +324,10 @@ const LoginPage = (props) => {
           onChange={(ev) => setPassword(ev.target.value)}
           fullWidth
           variant="standard"
-          inputProps={{
-            "aria-label": t("subscribe_dialog_login_password_label"),
+          slotProps={{
+            htmlInput: {
+              "aria-label": t("subscribe_dialog_login_password_label"),
+            },
           }}
         />
       </DialogContent>

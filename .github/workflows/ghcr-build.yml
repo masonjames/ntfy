@@ -160,7 +160,7 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && vars.NTFY_AUTO_DEPLOY_ENABLED == 'true') ||
       (github.event_name == 'workflow_dispatch' && inputs.deploy)
-    runs-on: [self-hosted, hetzner]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -187,17 +187,70 @@ jobs:
             echo "Skipping duplicate UTC schedule outside the 03:00 local hour: $local_slot"
           fi
 
-      - name: Deploy immutable image with automatic data rollback
+      - name: Create narrow platform dispatch token
+        id: platform
+        if: steps.window.outputs.eligible == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: masonjames
+          repositories: platform-infra
+          permission-actions: write
+          permission-contents: read
+
+      - name: Dispatch platform-owned release and wait for verification
         if: steps.window.outputs.eligible == 'true'
         env:
+          GH_TOKEN: ${{ steps.platform.outputs.token }}
           CANDIDATE_IMAGE: ${{ needs.build.outputs.immutable_image }}
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          CALLER_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_IMAGE" =~ ^ghcr\.io/masonjames/ntfy@sha256:[0-9a-f]{64}$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          sudo /usr/local/bin/ntfy-release deploy "$CANDIDATE_IMAGE" "$SOURCE_SHA" \
-            | tee ntfy-release-evidence.jsonl
+          dispatch_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run ntfy-release.yml \
+            --repo masonjames/platform-infra \
+            --ref main \
+            -f candidate_image="$CANDIDATE_IMAGE" \
+            -f source_sha="$SOURCE_SHA" \
+            -f caller_run_url="$CALLER_RUN_URL"
+
+          platform_run=""
+          for _ in $(seq 1 30); do
+            platform_run=$(gh run list \
+              --repo masonjames/platform-infra \
+              --workflow ntfy-release.yml \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,displayTitle,createdAt,url \
+              | jq -c \
+                --arg title "ntfy $SOURCE_SHA" \
+                --arg started "$dispatch_started" \
+                '[.[] | select(.displayTitle == $title and .createdAt >= $started)] | first // empty')
+            [ -n "$platform_run" ] && break
+            sleep 2
+          done
+          if [ -z "$platform_run" ]; then
+            echo "::error::The platform release run was not discoverable after dispatch."
+            exit 1
+          fi
+
+          platform_run_id=$(jq -r .databaseId <<< "$platform_run")
+          platform_run_url=$(jq -r .url <<< "$platform_run")
+          jq -n \
+            --arg candidate_image "$CANDIDATE_IMAGE" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg caller_run_url "$CALLER_RUN_URL" \
+            --arg platform_run_url "$platform_run_url" \
+            '{candidate_image:$candidate_image,source_sha:$source_sha,caller_run_url:$caller_run_url,platform_run_url:$platform_run_url}' \
+            > ntfy-release-evidence.jsonl
+          gh run watch "$platform_run_id" \
+            --repo masonjames/platform-infra \
+            --exit-status \
+            --interval 10
 
       - name: Upload deployment evidence
         if: always() && steps.window.outputs.eligible == 'true'

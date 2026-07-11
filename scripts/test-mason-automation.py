@@ -12,7 +12,10 @@ build_workflow = (ROOT / ".github/workflows/build.yaml").read_text()
 
 assert "ghcr.io/masonjames/ntfy:latest" not in release
 assert "type=raw,value=latest" not in release
-assert "ntfy-release deploy" in release
+assert "gh workflow run ntfy-release.yml" in release
+assert "--repo masonjames/platform-infra" in release
+assert "permission-actions: write" in release
+assert "runs-on: [self-hosted, hetzner]" not in release
 assert "vars.NTFY_AUTO_DEPLOY_ENABLED == 'true'" in release
 assert "TZ=America/New_York" in release
 assert "^7-03[0-5][0-9]$" in release

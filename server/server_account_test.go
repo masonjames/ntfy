@@ -78,7 +78,8 @@ func TestAccount_Signup_LimitReached(t *testing.T) {
 		s := newTestServer(t, conf)
 		defer s.closeDatabases()
 
-		for i := 0; i < 3; i++ {
+		// Burst is DefaultVisitorAccountCreationLimitBurst (shared with password-reset requests)
+		for i := 0; i < 6; i++ {
 			rr := request(t, s, "POST", "/v1/account", fmt.Sprintf(`{"username":"phil%d", "password":"mypass"}`, i), nil)
 			require.Equal(t, 200, rr.Code)
 		}
@@ -131,7 +132,8 @@ func TestAccount_Signup_Rate_Limit(t *testing.T) {
 		conf.EnableSignup = true
 		s := newTestServer(t, conf)
 
-		for i := 0; i < 3; i++ {
+		// Burst is DefaultVisitorAccountCreationLimitBurst (shared with password-reset requests)
+		for i := 0; i < 6; i++ {
 			rr := request(t, s, "POST", "/v1/account", fmt.Sprintf(`{"username":"phil%d", "password":"mypass"}`, i), nil)
 			require.Equal(t, 200, rr.Code, "failed on iteration %d", i)
 		}
@@ -149,7 +151,7 @@ func TestAccount_Get_Anonymous(t *testing.T) {
 		conf.VisitorAttachmentTotalSizeLimit = 5123
 		conf.AttachmentFileSizeLimit = 512
 		s := newTestServer(t, conf)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		defer s.closeDatabases()
 
 		rr := request(t, s, "GET", "/v1/account", "", nil)
@@ -205,12 +207,19 @@ func TestAccount_ChangeSettings(t *testing.T) {
 		})
 		require.Equal(t, 200, rr.Code)
 
+		rr = request(t, s, "PATCH", "/v1/account/settings", `{"date_format": "iso8601", "time_format": "24h"}`, map[string]string{
+			"Authorization": util.BearerAuth(token.Value),
+		})
+		require.Equal(t, 200, rr.Code)
+
 		rr = request(t, s, "GET", "/v1/account", `{"username":"marian", "password":"marian"}`, map[string]string{
 			"Authorization": util.BearerAuth(token.Value),
 		})
 		require.Equal(t, 200, rr.Code)
 		account, _ := util.UnmarshalJSON[apiAccountResponse](io.NopCloser(rr.Body))
 		require.Equal(t, "de", account.Language)
+		require.Equal(t, "iso8601", account.DateFormat) // Merged, not overwritten by previous PATCH
+		require.Equal(t, "24h", account.TimeFormat)
 		require.Equal(t, util.Int(86400), account.Notification.DeleteAfter)
 		require.Equal(t, util.String("juntos"), account.Notification.Sound)
 		require.Nil(t, account.Notification.MinPriority) // Not set

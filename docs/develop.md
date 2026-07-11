@@ -65,8 +65,8 @@ These steps **assume Ubuntu**. Steps may vary on different Linux distributions.
 
 First, install [Go](https://go.dev/) (see [official instructions](https://go.dev/doc/install)):
 ``` shell
-wget https://go.dev/dl/go1.19.1.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.19.1.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.25.8.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.25.8.linux-amd64.tar.gz
 export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
 go version   # verifies that it worked
 ```
@@ -77,9 +77,11 @@ go install github.com/goreleaser/goreleaser@latest
 goreleaser -v   # verifies that it worked
 ```
 
-Install [nodejs](https://nodejs.org/en/) (see [official instructions](https://nodejs.org/en/download/package-manager/)):
+Install [nodejs](https://nodejs.org/en/) (see [official instructions](https://nodejs.org/en/download/package-manager/)).
+Use a current LTS release (Node 24 is what CI builds with; anything older than Node 20 will not work
+with the current Vite-based web build):
 ``` shell
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt-get install -y nodejs
 npm -v   # verifies that it worked
 ```

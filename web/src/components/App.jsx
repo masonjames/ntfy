@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createContext, Suspense, useContext, useEffect, useState, useMemo } from "react";
+import { Suspense, useContext, useEffect, useState, useMemo } from "react";
 import { Box, Toolbar, CssBaseline, Backdrop, CircularProgress, useMediaQuery, ThemeProvider, createTheme } from "@mui/material";
 import { useLiveQuery } from "dexie-react-hooks";
 import { BrowserRouter, Outlet, Route, Routes, useParams } from "react-router-dom";
@@ -20,14 +20,18 @@ import Messaging from "./Messaging";
 import Login from "./Login";
 import Signup from "./Signup";
 import Account from "./Account";
+import EmailVerify from "./EmailVerify";
+import PasswordReset from "./PasswordReset";
+import PasswordResetRequest from "./PasswordResetRequest";
 import initI18n from "../app/i18n"; // Translations!
 import prefs from "../app/Prefs";
 import RTLCacheProvider from "./RTLCacheProvider";
 import session from "../app/Session";
+import AccountContext from "./AccountContext";
+import { PrefCacheProvider } from "./PrefCache";
+import hideSplash from "../app/splash";
 
 initI18n();
-
-export const AccountContext = createContext(null);
 
 const App = () => {
   const { i18n } = useTranslation();
@@ -36,15 +40,28 @@ const App = () => {
   const accountMemo = useMemo(() => ({ account, setAccount }), [account, setAccount]);
   const prefersDarkMode = useMediaQuery("(prefers-color-scheme: dark)");
   const themePreference = useLiveQuery(() => prefs.theme());
-  const theme = React.useMemo(
-    () => createTheme({ ...(darkModeEnabled(prefersDarkMode, themePreference) ? darkTheme : lightTheme), direction: languageDir }),
-    [prefersDarkMode, themePreference, languageDir]
-  );
+  const isDark = darkModeEnabled(prefersDarkMode, themePreference);
+  const theme = React.useMemo(() => createTheme({ ...(isDark ? darkTheme : lightTheme), direction: languageDir }), [isDark, languageDir]);
 
   useEffect(() => {
     document.documentElement.setAttribute("lang", getKebabCaseLangStr(i18n.language));
     document.dir = languageDir;
   }, [i18n.language, languageDir]);
+
+  // Keep the <html> background in sync with the theme once loaded. The splash script sets the
+  // initial class; don't override it while the preference is still loading.
+  useEffect(() => {
+    if (themePreference === undefined) {
+      return;
+    }
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark, themePreference]);
+
+  // Safety net: hide the splash even if no route does (e.g. an unmatched path).
+  useEffect(() => {
+    const timer = setTimeout(() => hideSplash(), 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (!session.exists() && config.require_login && window.location.pathname !== routes.login) {
@@ -61,8 +78,13 @@ const App = () => {
               <CssBaseline />
               <ErrorBoundary>
                 <Routes>
-                  <Route path={routes.login} element={<Login />} />
-                  <Route path={routes.signup} element={<Signup />} />
+                  <Route element={<AuthLayout />}>
+                    <Route path={routes.login} element={<Login />} />
+                    <Route path={routes.signup} element={<Signup />} />
+                    <Route path={routes.passwordResetRequest} element={<PasswordResetRequest />} />
+                    <Route path={routes.passwordReset} element={<PasswordReset />} />
+                    <Route path={routes.emailVerify} element={<EmailVerify />} />
+                  </Route>
                   <Route element={<Layout />}>
                     <Route path={routes.app} element={<AllSubscriptions />} />
                     <Route path={routes.account} element={<Account />} />
@@ -86,6 +108,12 @@ const updateTitle = (newNotificationsCount) => {
   updateFavicon(newNotificationsCount);
 };
 
+// Auth pages render synchronously, so the splash can be removed on mount.
+const AuthLayout = () => {
+  useEffect(() => hideSplash(), []);
+  return <Outlet />;
+};
+
 const Layout = () => {
   const params = useParams();
   const { account, setAccount } = useContext(AccountContext);
@@ -93,13 +121,16 @@ const Layout = () => {
   const [sendDialogOpenMode, setSendDialogOpenMode] = useState("");
   const users = useLiveQuery(() => userManager.all());
   const subscriptions = useLiveQuery(() => subscriptionManager.all());
+  // Preloaded here so the All view (and single topics, via filter) have data on mount -- no empty
+  // frame when switching.
+  const allNotifications = useLiveQuery(() => subscriptionManager.getAllNotifications());
   const webPushTopics = useWebPushTopics();
   const subscriptionsWithoutInternal = subscriptions?.filter((s) => !s.internal);
   const newNotificationsCount = subscriptionsWithoutInternal?.reduce((prev, cur) => prev + cur.new, 0) || 0;
   const [selected] = (subscriptionsWithoutInternal || []).filter(
     (s) =>
       (params.baseUrl && expandUrl(params.baseUrl).includes(s.baseUrl) && params.topic === s.topic) ||
-      (config.base_url === s.baseUrl && params.topic === s.topic)
+      (config.base_url === s.baseUrl && params.topic === s.topic),
   );
 
   useConnectionListeners(account, subscriptions, users, webPushTopics);
@@ -107,27 +138,37 @@ const Layout = () => {
   useBackgroundProcesses();
   useEffect(() => updateTitle(newNotificationsCount), [newNotificationsCount]);
 
+  // Hide the splash only once subscriptions have loaded, so the nav/list don't pop in empty-then-filled.
+  useEffect(() => {
+    if (subscriptions !== undefined) {
+      hideSplash();
+    }
+  }, [subscriptions]);
+
   return (
-    <Box sx={{ display: "flex" }}>
-      <ActionBar selected={selected} onMobileDrawerToggle={() => setMobileDrawerOpen(!mobileDrawerOpen)} />
-      <Navigation
-        subscriptions={subscriptionsWithoutInternal}
-        selectedSubscription={selected}
-        mobileDrawerOpen={mobileDrawerOpen}
-        onMobileDrawerToggle={() => setMobileDrawerOpen(!mobileDrawerOpen)}
-        onPublishMessageClick={() => setSendDialogOpenMode(PublishDialog.OPEN_MODE_DEFAULT)}
-      />
-      <Main>
-        <Toolbar />
-        <Outlet
-          context={{
-            subscriptions: subscriptionsWithoutInternal,
-            selected,
-          }}
+    <PrefCacheProvider>
+      <Box sx={{ display: "flex" }}>
+        <ActionBar selected={selected} onMobileDrawerToggle={() => setMobileDrawerOpen(!mobileDrawerOpen)} />
+        <Navigation
+          subscriptions={subscriptionsWithoutInternal}
+          selectedSubscription={selected}
+          mobileDrawerOpen={mobileDrawerOpen}
+          onMobileDrawerToggle={() => setMobileDrawerOpen(!mobileDrawerOpen)}
+          onPublishMessageClick={() => setSendDialogOpenMode(PublishDialog.OPEN_MODE_DEFAULT)}
         />
-      </Main>
-      <Messaging selected={selected} dialogOpenMode={sendDialogOpenMode} onDialogOpenModeChange={setSendDialogOpenMode} />
-    </Box>
+        <Main>
+          <Toolbar />
+          <Outlet
+            context={{
+              subscriptions: subscriptionsWithoutInternal,
+              selected,
+              allNotifications,
+            }}
+          />
+        </Main>
+        <Messaging selected={selected} dialogOpenMode={sendDialogOpenMode} onDialogOpenModeChange={setSendDialogOpenMode} />
+      </Box>
+    </PrefCacheProvider>
   );
 };
 

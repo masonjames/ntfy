@@ -24,11 +24,13 @@ import {
   useTheme,
 } from "@mui/material";
 import { Trans, useTranslation } from "react-i18next";
-import { Check, Close } from "@mui/icons-material";
+import Check from "@mui/icons-material/Check";
+import Close from "@mui/icons-material/Close";
 import { NavLink } from "react-router-dom";
 import { UnauthorizedError } from "../app/errors";
-import { formatBytes, formatNumber, formatPrice, formatShortDate } from "../app/utils";
-import { AccountContext } from "./App";
+import { formatBytes, formatNumber, formatPrice, formatDate } from "../app/utils";
+import AccountContext from "./AccountContext";
+import { usePrefCache } from "./PrefCache";
 import routes from "./routes";
 import session from "../app/Session";
 import accountApi, { SubscriptionInterval } from "../app/AccountApi";
@@ -62,7 +64,8 @@ const Banner = {
 
 const UpgradeDialog = (props) => {
   const theme = useTheme();
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
+  const { dateFormat } = usePrefCache();
   const { account } = useContext(AccountContext); // May be undefined!
   const [error, setError] = useState("");
   const [tiers, setTiers] = useState(null);
@@ -233,7 +236,7 @@ const UpgradeDialog = (props) => {
             <Trans
               i18nKey="account_upgrade_dialog_cancel_warning"
               values={{
-                date: formatShortDate(account?.billing?.paid_until || 0, i18n.language),
+                date: formatDate(account?.billing?.paid_until || 0, dateFormat),
               }}
             />
           </Alert>

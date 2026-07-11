@@ -17,13 +17,11 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 	"unicode/utf8"
 
@@ -31,7 +29,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
-	"gopkg.in/yaml.v2"
+	"heckel.io/ntfy/v2/action"
 	"heckel.io/ntfy/v2/attachment"
 	"heckel.io/ntfy/v2/db"
 	"heckel.io/ntfy/v2/db/pg"
@@ -42,7 +40,6 @@ import (
 	"heckel.io/ntfy/v2/payments"
 	"heckel.io/ntfy/v2/user"
 	"heckel.io/ntfy/v2/util"
-	"heckel.io/ntfy/v2/util/sprig"
 	"heckel.io/ntfy/v2/webpush"
 )
 
@@ -57,11 +54,11 @@ type Server struct {
 	unixListener      net.Listener
 	smtpServer        *smtp.Server
 	smtpServerBackend *smtpBackend
-	smtpSender        mailer
-	mailSender        *mail.Sender
+	mailer            mail.Sender
 	topics            map[string]*topic
 	visitors          map[string]*visitor // ip:<ip> or user:<user>
 	firebaseClient    *firebaseClient
+	twilio            *twilioClient
 	messages          int64                               // Total number of messages (persisted if messageCache enabled)
 	messagesHistory   []int64                             // Last n values of the messages counter, used to determine rate
 	userManager       *user.Manager                       // Might be nil!
@@ -91,10 +88,16 @@ var (
 	publishPathRegex       = regexp.MustCompile(`^/[-_A-Za-z0-9]{1,64}/(publish|send|trigger)$`)
 	updatePathRegex        = regexp.MustCompile(`^/[-_A-Za-z0-9]{1,64}/[-_A-Za-z0-9]{1,64}$`)
 	clearPathRegex         = regexp.MustCompile(`^/[-_A-Za-z0-9]{1,64}/[-_A-Za-z0-9]{1,64}/(read|clear)$`)
+	deletePathRegex        = regexp.MustCompile(`^/[-_A-Za-z0-9]{1,64}/[-_A-Za-z0-9]{1,64}/delete$`)
 	sequenceIDRegex        = topicRegex
 
-	webConfigPath                                        = "/config.js"
-	webManifestPath                                      = "/manifest.webmanifest"
+	webAppConfigPath              = "/config.js"
+	webAppManifestPath            = "/manifest.webmanifest"
+	webAppEmailVerifyPathPrefix   = "/account/email/verify/"                                       // Browser landing route; raw token appended
+	webAppEmailVerifyRegex        = regexp.MustCompile(`^/account/email/verify/[-_A-Za-z0-9]+$`)   // Magic-link landing (served by the web app)
+	webAppPasswordResetPathPrefix = "/account/password/reset/"                                     // Browser landing route; raw token appended
+	webAppPasswordResetRegex      = regexp.MustCompile(`^/account/password/reset/[-_A-Za-z0-9]+$`) // Password-reset landing (served by the web app)
+
 	accountPath                                          = "/account"
 	matrixPushPath                                       = "/_matrix/push/v1/notify"
 	metricsPath                                          = "/metrics"
@@ -116,6 +119,10 @@ var (
 	apiAccountPhoneVerifyPath                            = "/v1/account/phone/verify"
 	apiAccountEmailPath                                  = "/v1/account/email"
 	apiAccountEmailVerifyPath                            = "/v1/account/email/verify"
+	apiAccountEmailPrimaryPath                           = "/v1/account/email/primary"
+	apiAccountEmailResendPath                            = "/v1/account/email/resend"
+	apiAccountPasswordResetRequestPath                   = "/v1/account/password/reset/request"
+	apiAccountPasswordResetPath                          = "/v1/account/password/reset"
 	apiAccountBillingPortalPath                          = "/v1/account/billing/portal"
 	apiAccountBillingWebhookPath                         = "/v1/account/billing/webhook"
 	apiAccountBillingSubscriptionPath                    = "/v1/account/billing/subscription"
@@ -143,10 +150,12 @@ var (
 	templatesFs  embed.FS // Contains template config files (e.g. grafana.yml, github.yml, ...)
 	templatesDir = "templates"
 
-	// templateDisallowedRegex tests a template for disallowed expressions. While not really dangerous, they
-	// are not useful, and seem potentially troublesome.
-	templateDisallowedRegex = regexp.MustCompile(`(?m)\{\{-?\s*(call|template|define)\b`)
-	templateNameRegex       = regexp.MustCompile(`^[-_A-Za-z0-9]+$`)
+	templateNameRegex = regexp.MustCompile(`^[-_A-Za-z0-9]+$`)
+
+	// templateMaxExecutionTime is the wall-clock deadline for a single template render, a DoS guard
+	// (GHSA-rhwf-xgc9-m9fp). It is a var (not a const) solely so tests can raise it; it is never
+	// mutated in production.
+	templateMaxExecutionTime = 100 * time.Millisecond
 )
 
 const (
@@ -160,7 +169,6 @@ const (
 	unifiedPushTopicPrefix   = "up"                      // Temporarily, we rate limit all "up*" topics based on the subscriber
 	unifiedPushTopicLength   = 14                        // Length of UnifiedPush topics, including the "up" part
 	messagesHistoryMax       = 10                        // Number of message count values to keep in memory
-	templateMaxExecutionTime = 100 * time.Millisecond    // Maximum time a template can take to execute, used to prevent DoS attacks
 	templateMaxOutputBytes   = 1024 * 1024               // Maximum number of bytes a template can output, used to prevent DoS attacks
 	templateFileExtension    = ".yml"                    // Template files must end with this extension
 )
@@ -176,16 +184,15 @@ const (
 // New instantiates a new Server. It creates the cache and adds a Firebase
 // subscriber (if configured).
 func New(conf *Config) (*Server, error) {
-	var mailer mailer
-	var mailSender *mail.Sender
+	var sender mail.Sender
 	if conf.SMTPSenderAddr != "" {
-		mailSender = mail.NewSender(&mail.Config{
+		sender = mail.NewSender(&mail.Config{
+			BaseURL:  conf.BaseURL,
 			SMTPAddr: conf.SMTPSenderAddr,
 			SMTPUser: conf.SMTPSenderUser,
 			SMTPPass: conf.SMTPSenderPass,
 			From:     conf.SMTPSenderFrom,
 		})
-		mailer = &smtpSender{config: conf, sender: mailSender}
 	}
 	var stripe stripeAPI
 	if payments.Available && conf.StripeSecretKey != "" {
@@ -290,8 +297,8 @@ func New(conf *Config) (*Server, error) {
 		webPush:         wp,
 		attachment:      attachmentStore,
 		firebaseClient:  firebaseClient,
-		smtpSender:      mailer,
-		mailSender:      mailSender,
+		twilio:          newTwilioClient(conf, userManager),
+		mailer:          sender,
 		topics:          topics,
 		userManager:     userManager,
 		messages:        messages,
@@ -443,9 +450,6 @@ func (s *Server) Stop() {
 	if s.smtpServer != nil {
 		s.smtpServer.Close()
 	}
-	if s.mailSender != nil {
-		s.mailSender.Close()
-	}
 	if s.attachment != nil {
 		s.attachment.Close()
 	}
@@ -542,7 +546,7 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, v *visitor,
 
 func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visitor) error {
 	if r.Method == http.MethodGet && r.URL.Path == "/" && s.config.WebRoot == "/" {
-		return s.ensureWebEnabled(s.handleRoot)(w, r, v)
+		return s.ensureWebEnabled(s.handleWebApp)(w, r, v)
 	} else if r.Method == http.MethodHead && r.URL.Path == "/" {
 		return s.ensureWebEnabled(s.handleEmpty)(w, r, v)
 	} else if r.Method == http.MethodGet && r.URL.Path == apiHealthPath {
@@ -551,9 +555,9 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visit
 		return s.ensureAdmin(s.handleVersion)(w, r, v)
 	} else if r.Method == http.MethodGet && r.URL.Path == apiConfigPath {
 		return s.handleConfig(w, r, v)
-	} else if r.Method == http.MethodGet && r.URL.Path == webConfigPath {
+	} else if r.Method == http.MethodGet && r.URL.Path == webAppConfigPath {
 		return s.ensureWebEnabled(s.handleWebConfig)(w, r, v)
-	} else if r.Method == http.MethodGet && r.URL.Path == webManifestPath {
+	} else if r.Method == http.MethodGet && r.URL.Path == webAppManifestPath {
 		return s.ensureWebPushEnabled(s.handleWebManifest)(w, r, v)
 	} else if r.Method == http.MethodGet && r.URL.Path == apiUsersPath {
 		return s.ensureAdmin(s.handleUsersGet)(w, r, v)
@@ -611,12 +615,20 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visit
 		return s.ensureUser(s.ensureCallsEnabled(s.withAccountSync(s.handleAccountPhoneNumberAdd)))(w, r, v)
 	} else if r.Method == http.MethodDelete && r.URL.Path == apiAccountPhonePath {
 		return s.ensureUser(s.ensureCallsEnabled(s.withAccountSync(s.handleAccountPhoneNumberDelete)))(w, r, v)
-	} else if r.Method == http.MethodPut && r.URL.Path == apiAccountEmailVerifyPath {
-		return s.ensureUser(s.ensureEmailsEnabled(s.withAccountSync(s.handleAccountEmailVerify)))(w, r, v)
 	} else if r.Method == http.MethodPut && r.URL.Path == apiAccountEmailPath {
 		return s.ensureUser(s.ensureEmailsEnabled(s.withAccountSync(s.handleAccountEmailAdd)))(w, r, v)
+	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountEmailVerifyPath {
+		return s.ensureEmailsEnabled(s.limitRequests(s.handleAccountEmailVerify))(w, r, v) // No ensureUser: clicked from a mail client, possibly logged out
 	} else if r.Method == http.MethodDelete && r.URL.Path == apiAccountEmailPath {
 		return s.ensureUser(s.ensureEmailsEnabled(s.withAccountSync(s.handleAccountEmailDelete)))(w, r, v)
+	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountEmailPrimaryPath {
+		return s.ensureUser(s.withAccountSync(s.handleAccountEmailSetPrimary))(w, r, v)
+	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountEmailResendPath {
+		return s.ensureUser(s.ensureEmailsEnabled(s.handleAccountEmailResend))(w, r, v)
+	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountPasswordResetRequestPath {
+		return s.ensureEmailsEnabled(s.limitRequests(s.handleAccountPasswordResetRequest))(w, r, v) // Unauthenticated
+	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountPasswordResetPath {
+		return s.ensureEmailsEnabled(s.limitRequests(s.handleAccountPasswordReset))(w, r, v) // Unauthenticated
 	} else if r.Method == http.MethodPost && apiWebPushPath == r.URL.Path {
 		return s.ensureWebPushEnabled(s.limitRequests(s.handleWebPushUpdate))(w, r, v)
 	} else if r.Method == http.MethodDelete && apiWebPushPath == r.URL.Path {
@@ -643,9 +655,9 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visit
 		return s.transformMatrixJSON(s.limitRequestsWithTopic(s.authorizeTopicWrite(s.handlePublishMatrix)))(w, r, v)
 	} else if (r.Method == http.MethodPut || r.Method == http.MethodPost) && (topicPathRegex.MatchString(r.URL.Path) || updatePathRegex.MatchString(r.URL.Path)) {
 		return s.limitRequestsWithTopic(s.authorizeTopicWrite(s.handlePublish))(w, r, v)
-	} else if r.Method == http.MethodDelete && updatePathRegex.MatchString(r.URL.Path) {
+	} else if (r.Method == http.MethodDelete && updatePathRegex.MatchString(r.URL.Path)) || (r.Method == http.MethodGet && deletePathRegex.MatchString(r.URL.Path)) {
 		return s.limitRequestsWithTopic(s.authorizeTopicWrite(s.handleDelete))(w, r, v)
-	} else if r.Method == http.MethodPut && clearPathRegex.MatchString(r.URL.Path) {
+	} else if (r.Method == http.MethodGet || r.Method == http.MethodPut) && clearPathRegex.MatchString(r.URL.Path) {
 		return s.limitRequestsWithTopic(s.authorizeTopicWrite(s.handleClear))(w, r, v)
 	} else if r.Method == http.MethodGet && publishPathRegex.MatchString(r.URL.Path) {
 		return s.limitRequestsWithTopic(s.authorizeTopicWrite(s.handlePublish))(w, r, v)
@@ -659,15 +671,12 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visit
 		return s.limitRequests(s.authorizeTopicRead(s.handleSubscribeWS))(w, r, v)
 	} else if r.Method == http.MethodGet && authPathRegex.MatchString(r.URL.Path) {
 		return s.limitRequests(s.authorizeTopicRead(s.handleTopicAuth))(w, r, v)
+	} else if r.Method == http.MethodGet && (webAppEmailVerifyRegex.MatchString(r.URL.Path) || webAppPasswordResetRegex.MatchString(r.URL.Path)) {
+		return s.ensureWebEnabled(s.handleWebAppNoIndex)(w, r, v) // Magic-link landing pages (client-side routes)
 	} else if r.Method == http.MethodGet && (topicPathRegex.MatchString(r.URL.Path) || externalTopicPathRegex.MatchString(r.URL.Path)) {
 		return s.ensureWebEnabled(s.handleTopic)(w, r, v)
 	}
 	return errHTTPNotFound
-}
-
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request, v *visitor) error {
-	r.URL.Path = webAppIndex
-	return s.handleStatic(w, r, v)
 }
 
 func (s *Server) handleTopic(w http.ResponseWriter, r *http.Request, v *visitor) error {
@@ -678,8 +687,7 @@ func (s *Server) handleTopic(w http.ResponseWriter, r *http.Request, v *visitor)
 		_, err := io.WriteString(w, `{"unifiedpush":{"version":1}}`+"\n")
 		return err
 	}
-	r.URL.Path = webAppIndex
-	return s.handleStatic(w, r, v)
+	return s.handleWebApp(w, r, v)
 }
 
 func (s *Server) handleEmpty(_ http.ResponseWriter, _ *http.Request, _ *visitor) error {
@@ -697,78 +705,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request, _ *visitor
 	return s.writeJSON(w, response)
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, _ *visitor) error {
-	w.Header().Set("Cache-Control", "no-cache")
-	return s.writeJSON(w, s.configResponse())
-}
-
-func (s *Server) handleWebConfig(w http.ResponseWriter, _ *http.Request, _ *visitor) error {
-	b, err := json.MarshalIndent(s.configResponse(), "", "  ")
-	if err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "text/javascript")
-	w.Header().Set("Cache-Control", "no-cache")
-	_, err = io.WriteString(w, fmt.Sprintf("// Generated server configuration\nvar config = %s;\n", string(b)))
-	return err
-}
-
-func (s *Server) configResponse() *apiConfigResponse {
-	return &apiConfigResponse{
-		BaseURL:            "", // Will translate to window.location.origin
-		AppRoot:            s.config.WebRoot,
-		EnableLogin:        s.config.EnableLogin,
-		RequireLogin:       s.config.RequireLogin,
-		EnableSignup:       s.config.EnableSignup,
-		EnablePayments:     s.config.StripeSecretKey != "",
-		EnableCalls:        s.config.TwilioAccount != "",
-		EnableEmails:       s.config.SMTPSenderFrom != "",
-		EnableEmailVerify:  s.config.SMTPSenderVerify,
-		EnableReservations: s.config.EnableReservations,
-		EnableWebPush:      s.config.WebPushPublicKey != "",
-		BillingContact:     s.config.BillingContact,
-		WebPushPublicKey:   s.config.WebPushPublicKey,
-		DisallowedTopics:   s.config.DisallowedTopics,
-		ConfigHash:         s.config.Hash(),
-	}
-}
-
-// handleWebManifest serves the web app manifest for the progressive web app (PWA)
-func (s *Server) handleWebManifest(w http.ResponseWriter, _ *http.Request, _ *visitor) error {
-	response := &webManifestResponse{
-		Name:            "ntfy",
-		Description:     "ntfy lets you send push notifications via scripts from any computer or phone",
-		ShortName:       "ntfy",
-		Scope:           "/",
-		StartURL:        s.config.WebRoot,
-		Display:         "standalone",
-		BackgroundColor: "#ffffff",
-		ThemeColor:      "#317f6f",
-		Icons: []*webManifestIcon{
-			{SRC: "/static/images/pwa-192x192.png", Sizes: "192x192", Type: "image/png"},
-			{SRC: "/static/images/pwa-512x512.png", Sizes: "512x512", Type: "image/png"},
-		},
-	}
-	return s.writeJSONWithContentType(w, response, "application/manifest+json")
-}
-
 // handleMetrics returns Prometheus metrics. This endpoint is only called if enable-metrics is set,
 // and listen-metrics-http is not set.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request, _ *visitor) error {
 	s.metricsHandler.ServeHTTP(w, r)
-	return nil
-}
-
-// handleStatic returns all static resources (excluding the docs), including the web app
-func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request, _ *visitor) error {
-	r.URL.Path = webSiteDir + r.URL.Path
-	util.Gzip(http.FileServer(http.FS(webFsCached))).ServeHTTP(w, r)
-	return nil
-}
-
-// handleDocs returns static resources related to the docs
-func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, _ *visitor) error {
-	util.Gzip(http.FileServer(http.FS(docsStaticCached))).ServeHTTP(w, r)
 	return nil
 }
 
@@ -901,7 +841,7 @@ func (s *Server) handlePublishInternal(r *http.Request, v *visitor) (*model.Mess
 	}
 	if call != "" {
 		var httpErr *errHTTP
-		call, httpErr = s.convertPhoneNumber(v.User(), call)
+		call, httpErr = s.twilio.convertPhoneNumber(v.User(), call)
 		if httpErr != nil {
 			return nil, httpErr.With(t)
 		} else if !vrate.CallAllowed() {
@@ -946,11 +886,11 @@ func (s *Server) handlePublishInternal(r *http.Request, v *visitor) (*model.Mess
 		if s.firebaseClient != nil && firebase {
 			go s.sendToFirebase(v, m)
 		}
-		if s.smtpSender != nil && email != "" {
+		if s.mailer != nil && email != "" {
 			go s.sendEmail(v, m, email)
 		}
 		if s.config.TwilioAccount != "" && call != "" {
-			go s.callPhone(v, r, m, call)
+			go s.twilio.callPhone(v, r, m, call)
 		}
 		if s.config.UpstreamBaseURL != "" && !unifiedpush { // UP messages are not sent to upstream
 			go s.forwardPollRequest(v, m)
@@ -1108,7 +1048,7 @@ func (s *Server) sendToFirebase(v *visitor, m *model.Message) {
 
 func (s *Server) sendEmail(v *visitor, m *model.Message, email string) {
 	logvm(v, m).Tag(tagEmail).Field("email", email).Info("Sending email to %s", email)
-	if err := s.smtpSender.Send(v, m, email); err != nil {
+	if err := s.mailer.SendNotification(email, m, v.ip.String()); err != nil {
 		logvm(v, m).Tag(tagEmail).Field("email", email).Err(err).Warn("Unable to send email to %s: %v", email, err.Error())
 		minc(metricEmailsPublishedFailure)
 		return
@@ -1208,7 +1148,7 @@ func (s *Server) parsePublishParams(r *http.Request, m *model.Message) (cache bo
 	if email != "" && !emailAddressRegex.MatchString(email) && !toBool(email) {
 		return false, false, "", "", "", false, "", errHTTPBadRequestEmailAddressInvalid
 	}
-	if s.smtpSender == nil && email != "" {
+	if s.mailer == nil && email != "" {
 		return false, false, "", "", "", false, "", errHTTPBadRequestEmailDisabled
 	}
 	call = readParam(r, "x-call", "call")
@@ -1259,7 +1199,7 @@ func (s *Server) parsePublishParams(r *http.Request, m *model.Message) (cache bo
 	}
 	actionsStr := readParam(r, "x-actions", "actions", "action")
 	if actionsStr != "" {
-		m.Actions, e = parseActions(actionsStr)
+		m.Actions, e = action.Parse(actionsStr)
 		if e != nil {
 			return false, false, "", "", "", false, "", errHTTPBadRequestActionsInvalid.Wrap("%s", e.Error())
 		}
@@ -1309,7 +1249,7 @@ func (s *Server) handlePublishBody(r *http.Request, v *visitor, m *model.Message
 	} else if m.Attachment != nil && m.Attachment.Name != "" {
 		return s.handleBodyAsAttachment(r, v, m, body) // Case 4
 	} else if template.Enabled() {
-		return s.handleBodyAsTemplatedTextMessage(m, template, body, priorityStr) // Case 5
+		return s.handleBodyAsTemplatedTextMessage(r.Context(), m, template, body, priorityStr) // Case 5
 	} else if !body.LimitReached && utf8.Valid(body.PeekedBytes) {
 		return s.handleBodyAsTextMessage(m, body) // Case 6
 	}
@@ -1343,114 +1283,6 @@ func (s *Server) handleBodyAsTextMessage(m *model.Message, body *util.PeekedRead
 		m.Message = fmt.Sprintf(defaultAttachmentMessage, m.Attachment.Name)
 	}
 	return nil
-}
-
-func (s *Server) handleBodyAsTemplatedTextMessage(m *model.Message, template templateMode, body *util.PeekedReadCloser, priorityStr string) error {
-	body, err := util.Peek(body, max(s.config.MessageSizeLimit, jsonBodyBytesLimit))
-	if err != nil {
-		return err
-	} else if body.LimitReached {
-		return errHTTPEntityTooLargeJSONBody
-	}
-	peekedBody := strings.TrimSpace(string(body.PeekedBytes))
-	if template.FileMode() {
-		if err := s.renderTemplateFromFile(m, template.FileName(), peekedBody); err != nil {
-			return err
-		}
-	} else {
-		if err := s.renderTemplateFromParams(m, peekedBody, priorityStr); err != nil {
-			return err
-		}
-	}
-	if len(m.Title) > s.config.MessageSizeLimit || len(m.Message) > s.config.MessageSizeLimit {
-		return errHTTPBadRequestTemplateMessageTooLarge
-	}
-	return nil
-}
-
-// renderTemplateFromFile transforms the JSON message body according to a template from the filesystem.
-// The template file must be in the templates directory, or in the configured template directory.
-func (s *Server) renderTemplateFromFile(m *model.Message, templateName, peekedBody string) error {
-	if !templateNameRegex.MatchString(templateName) {
-		return errHTTPBadRequestTemplateFileNotFound
-	}
-	templateContent, _ := templatesFs.ReadFile(filepath.Join(templatesDir, templateName+templateFileExtension)) // Read from the embedded filesystem first
-	if s.config.TemplateDir != "" {
-		if b, _ := os.ReadFile(filepath.Join(s.config.TemplateDir, templateName+templateFileExtension)); len(b) > 0 {
-			templateContent = b
-		}
-	}
-	if len(templateContent) == 0 {
-		return errHTTPBadRequestTemplateFileNotFound
-	}
-	var tpl templateFile
-	if err := yaml.Unmarshal(templateContent, &tpl); err != nil {
-		return errHTTPBadRequestTemplateFileInvalid
-	}
-	var err error
-	if tpl.Message != nil {
-		if m.Message, err = s.renderTemplate(templateName+" (message)", *tpl.Message, peekedBody); err != nil {
-			return err
-		}
-	}
-	if tpl.Title != nil {
-		if m.Title, err = s.renderTemplate(templateName+" (title)", *tpl.Title, peekedBody); err != nil {
-			return err
-		}
-	}
-	if tpl.Priority != nil {
-		renderedPriority, err := s.renderTemplate(templateName+" (priority)", *tpl.Priority, peekedBody)
-		if err != nil {
-			return err
-		}
-		if m.Priority, err = util.ParsePriority(renderedPriority); err != nil {
-			return errHTTPBadRequestPriorityInvalid
-		}
-	}
-	return nil
-}
-
-// renderTemplateFromParams transforms the JSON message body according to the inline template in the
-// message, title, and priority parameters.
-func (s *Server) renderTemplateFromParams(m *model.Message, peekedBody string, priorityStr string) error {
-	var err error
-	if m.Message, err = s.renderTemplate("priority query parameter", m.Message, peekedBody); err != nil {
-		return err
-	}
-	if m.Title, err = s.renderTemplate("title query parameter", m.Title, peekedBody); err != nil {
-		return err
-	}
-	if priorityStr != "" {
-		renderedPriority, err := s.renderTemplate("priority query parameter", priorityStr, peekedBody)
-		if err != nil {
-			return err
-		}
-		if m.Priority, err = util.ParsePriority(renderedPriority); err != nil {
-			return errHTTPBadRequestPriorityInvalid
-		}
-	}
-	return nil
-}
-
-// renderTemplate renders a template with the given JSON source data.
-func (s *Server) renderTemplate(name, tpl, source string) (string, error) {
-	if templateDisallowedRegex.MatchString(tpl) {
-		return "", errHTTPBadRequestTemplateDisallowedFunctionCalls
-	}
-	var data any
-	if err := json.Unmarshal([]byte(source), &data); err != nil {
-		return "", errHTTPBadRequestTemplateMessageNotJSON
-	}
-	t, err := template.New("").Funcs(sprig.TxtFuncMap()).Parse(tpl)
-	if err != nil {
-		return "", errHTTPBadRequestTemplateInvalid.Wrap("%s", err.Error())
-	}
-	var buf bytes.Buffer
-	limitWriter := util.NewLimitWriter(util.NewTimeoutWriter(&buf, templateMaxExecutionTime), util.NewFixedLimiter(templateMaxOutputBytes))
-	if err := t.Execute(limitWriter, data); err != nil {
-		return "", errHTTPBadRequestTemplateExecuteFailed.Wrap("template %s: %s", name, err.Error())
-	}
-	return strings.TrimSpace(strings.ReplaceAll(buf.String(), "\\n", "\n")), nil // replace any remaining "\n" (those outside of template curly braces) with newlines
 }
 
 func (s *Server) handleBodyAsAttachment(r *http.Request, v *visitor, m *model.Message, body *util.PeekedReadCloser) error {
@@ -1506,7 +1338,7 @@ func (s *Server) handleBodyAsAttachment(r *http.Request, v *visitor, m *model.Me
 func (s *Server) handleSubscribeJSON(w http.ResponseWriter, r *http.Request, v *visitor) error {
 	encoder := func(msg *model.Message) (string, error) {
 		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(msg.ForJSON()); err != nil {
+		if err := util.EncodeJSON(&buf, msg.ForJSON()); err != nil {
 			return "", err
 		}
 		return buf.String(), nil
@@ -1517,7 +1349,7 @@ func (s *Server) handleSubscribeJSON(w http.ResponseWriter, r *http.Request, v *
 func (s *Server) handleSubscribeSSE(w http.ResponseWriter, r *http.Request, v *visitor) error {
 	encoder := func(msg *model.Message) (string, error) {
 		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(msg.ForJSON()); err != nil {
+		if err := util.EncodeJSON(&buf, msg.ForJSON()); err != nil {
 			return "", err
 		}
 		if msg.Event != model.MessageEvent && msg.Event != model.MessageDeleteEvent && msg.Event != model.MessageClearEvent {
@@ -2236,130 +2068,6 @@ func (s *Server) transformMatrixJSON(next handleFunc) handleFunc {
 	}
 }
 
-func (s *Server) authorizeTopicWrite(next handleFunc) handleFunc {
-	return s.authorizeTopic(next, user.PermissionWrite)
-}
-
-func (s *Server) authorizeTopicRead(next handleFunc) handleFunc {
-	return s.authorizeTopic(next, user.PermissionRead)
-}
-
-func (s *Server) authorizeTopic(next handleFunc, perm user.Permission) handleFunc {
-	return func(w http.ResponseWriter, r *http.Request, v *visitor) error {
-		if s.userManager == nil {
-			return next(w, r, v)
-		}
-		topics, _, err := s.topicsFromPath(v, r.URL.Path)
-		if err != nil {
-			return err
-		}
-		u := v.User()
-		for _, t := range topics {
-			if err := s.userManager.Authorize(u, t.ID, perm); err != nil {
-				logvr(v, r).With(t).Err(err).Debug("Access to topic %s not authorized", t.ID)
-				return errHTTPForbidden.With(t)
-			}
-		}
-		return next(w, r, v)
-	}
-}
-
-// maybeAuthenticate reads the "Authorization" header and will try to authenticate the user
-// if it is set.
-//
-//   - If auth-file is not configured, immediately return an IP-based visitor
-//   - If the header is not set or not supported (anything non-Basic and non-Bearer),
-//     an IP-based visitor is returned
-//   - If the header is set, authenticate will be called to check the username/password (Basic auth),
-//     or the token (Bearer auth), and read the user from the database
-//
-// This function will ALWAYS return a visitor, even if an error occurs (e.g. unauthorized), so
-// that subsequent logging calls still have a visitor context.
-func (s *Server) maybeAuthenticate(r *http.Request) (*visitor, error) {
-	// Read the "Authorization" header value and exit out early if it's not set
-	ip := extractIPAddress(r, s.config.BehindProxy, s.config.ProxyForwardedHeader, s.config.ProxyTrustedPrefixes)
-	vip := s.visitor(ip, nil)
-	if s.userManager == nil {
-		return vip, nil
-	}
-	header, err := readAuthHeader(r)
-	if err != nil {
-		return vip, err
-	} else if !supportedAuthHeader(header) {
-		return vip, nil
-	}
-	// If we're trying to auth, check the rate limiter first
-	if !vip.AuthAllowed() {
-		return vip, errHTTPTooManyRequestsLimitAuthFailure // Always return visitor, even when error occurs!
-	}
-	u, err := s.authenticate(r, header)
-	if err != nil {
-		vip.AuthFailed()
-		logr(r).Err(err).Debug("Authentication failed")
-		return vip, errHTTPUnauthorized // Always return visitor, even when error occurs!
-	}
-	// Authentication with user was successful
-	return s.visitor(ip, u), nil
-}
-
-// authenticate a user based on basic auth username/password (Authorization: Basic ...), or token auth (Authorization: Bearer ...).
-// The Authorization header can be passed as a header or the ?auth=... query param. The latter is required only to
-// support the WebSocket JavaScript class, which does not support passing headers during the initial request. The auth
-// query param is effectively doubly base64 encoded. Its format is base64(Basic base64(user:pass)).
-func (s *Server) authenticate(r *http.Request, header string) (user *user.User, err error) {
-	if strings.HasPrefix(header, "Bearer") {
-		return s.authenticateBearerAuth(r, strings.TrimSpace(strings.TrimPrefix(header, "Bearer")))
-	}
-	return s.authenticateBasicAuth(r, header)
-}
-
-// readAuthHeader reads the raw value of the Authorization header, either from the actual HTTP header,
-// or from the ?auth... query parameter
-func readAuthHeader(r *http.Request) (string, error) {
-	value := strings.TrimSpace(r.Header.Get("Authorization"))
-	queryParam := readQueryParam(r, "authorization", "auth")
-	if queryParam != "" {
-		a, err := base64.RawURLEncoding.DecodeString(queryParam)
-		if err != nil {
-			return "", err
-		}
-		value = strings.TrimSpace(string(a))
-	}
-	return value, nil
-}
-
-// supportedAuthHeader returns true only if the Authorization header value starts
-// with "Basic" or "Bearer". In particular, an empty value is not supported, and neither
-// are things like "WebPush", or "vapid" (see #629).
-func supportedAuthHeader(value string) bool {
-	value = strings.ToLower(value)
-	return strings.HasPrefix(value, "basic ") || strings.HasPrefix(value, "bearer ")
-}
-
-func (s *Server) authenticateBasicAuth(r *http.Request, value string) (user *user.User, err error) {
-	r.Header.Set("Authorization", value)
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		return nil, errors.New("invalid basic auth")
-	} else if username == "" {
-		return s.authenticateBearerAuth(r, password) // Treat password as token
-	}
-	return s.userManager.Authenticate(username, password)
-}
-
-func (s *Server) authenticateBearerAuth(r *http.Request, token string) (*user.User, error) {
-	u, err := s.userManager.AuthenticateToken(token)
-	if err != nil {
-		return nil, err
-	}
-	ip := extractIPAddress(r, s.config.BehindProxy, s.config.ProxyForwardedHeader, s.config.ProxyTrustedPrefixes)
-	go s.userManager.EnqueueTokenUpdate(token, &user.TokenUpdate{
-		LastAccess: time.Now(),
-		LastOrigin: ip,
-	})
-	return u, nil
-}
-
 func (s *Server) visitor(ip netip.Addr, user *user.User) *visitor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2381,10 +2089,7 @@ func (s *Server) writeJSON(w http.ResponseWriter, v any) error {
 func (s *Server) writeJSONWithContentType(w http.ResponseWriter, v any, contentType string) error {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Access-Control-Allow-Origin", s.config.AccessControlAllowOrigin) // CORS, allow cross-origin requests
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		return err
-	}
-	return nil
+	return util.EncodeJSON(w, v)
 }
 
 func (s *Server) updateAndWriteStats(messagesCount int64) {

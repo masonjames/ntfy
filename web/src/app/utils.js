@@ -7,7 +7,7 @@ import pop from "../sounds/pop.mp3";
 import popSwoosh from "../sounds/pop-swoosh.mp3";
 import config from "./config";
 import emojisMapped from "./emojisMapped";
-import { THEME } from "./Prefs";
+import { THEME, DATE_FORMAT, TIME_FORMAT } from "./Prefs";
 
 export const tiersUrl = (baseUrl) => `${baseUrl}/v1/tiers`;
 export const shortUrl = (url) => url.replaceAll(/https?:\/\//g, "");
@@ -35,6 +35,10 @@ export const accountPhoneUrl = (baseUrl) => `${baseUrl}/v1/account/phone`;
 export const accountPhoneVerifyUrl = (baseUrl) => `${baseUrl}/v1/account/phone/verify`;
 export const accountEmailUrl = (baseUrl) => `${baseUrl}/v1/account/email`;
 export const accountEmailVerifyUrl = (baseUrl) => `${baseUrl}/v1/account/email/verify`;
+export const accountEmailPrimaryUrl = (baseUrl) => `${baseUrl}/v1/account/email/primary`;
+export const accountEmailResendUrl = (baseUrl) => `${baseUrl}/v1/account/email/resend`;
+export const accountPasswordResetRequestUrl = (baseUrl) => `${baseUrl}/v1/account/password/reset/request`;
+export const accountPasswordResetUrl = (baseUrl) => `${baseUrl}/v1/account/password/reset`;
 
 export const validUrl = (url) => url.match(/^https?:\/\/.+/);
 
@@ -147,14 +151,68 @@ export const hashCode = (s) => {
  */
 export const getKebabCaseLangStr = (language) => (typeof language === "string" && language.length > 0 ? language.replace(/_/g, "-") : "en");
 
-export const formatShortDateTime = (timestamp, language) =>
-  new Intl.DateTimeFormat(getKebabCaseLangStr(language), {
-    dateStyle: "short",
+// Date/time display is intentionally NOT tied to the UI translation language; it follows the
+// dedicated dateFormat/timeFormat prefs (see Prefs.js). SYSTEM modes pass no locale to Intl so it
+// uses the browser's default (the user's OS region/format settings). DMY/MDY force the day/month
+// order; ISO8601 forces an unambiguous, locale-independent and always-24-hour format. The clock
+// (12h/24h) is chosen independently via timeFormat. All variants render local time.
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// Per-format date builders (only ISO zero-pads; the rest drop leading zeros). The router below
+// (formatDate) picks one of these for a fixed-order format, or falls back to the browser locale.
+const formatDateIso = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+const formatDateDmy = (date) => `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
+const formatDateDmyDot = (date) => `${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()}`;
+const formatDateMdy = (date) => `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+
+// ISO date-time is always YYYY-MM-DD HH:mm (24-hour), independent of the timeFormat pref.
+const formatDateTimeIso = (date) => `${formatDateIso(date)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+
+// undefined lets the locale decide the clock; true/false force a 12- or 24-hour clock. Passing
+// hour12: undefined to Intl is equivalent to omitting it (and avoids an object spread that would
+// otherwise widen the sibling dateStyle/timeStyle string literals).
+const hour12For = (timeFormat) => {
+  if (timeFormat === TIME_FORMAT.H12) return true;
+  if (timeFormat === TIME_FORMAT.H24) return false;
+  return undefined;
+};
+
+// The date router: delegates to a fixed-order builder, or falls back to the browser locale (SYSTEM).
+export const formatDate = (timestamp, dateFormat = DATE_FORMAT.SYSTEM) => {
+  const date = new Date(timestamp * 1000);
+  switch (dateFormat) {
+    case DATE_FORMAT.ISO8601:
+      return formatDateIso(date);
+    case DATE_FORMAT.DMY:
+      return formatDateDmy(date);
+    case DATE_FORMAT.DMY_DOT:
+      return formatDateDmyDot(date);
+    case DATE_FORMAT.MDY:
+      return formatDateMdy(date);
+    default:
+      return new Intl.DateTimeFormat(undefined, { dateStyle: "short" }).format(date);
+  }
+};
+
+export const formatTime = (timestamp, timeFormat = TIME_FORMAT.SYSTEM) =>
+  new Intl.DateTimeFormat(undefined, {
     timeStyle: "short",
+    hour12: hour12For(timeFormat),
   }).format(new Date(timestamp * 1000));
 
-export const formatShortDate = (timestamp, language) =>
-  new Intl.DateTimeFormat(getKebabCaseLangStr(language), { dateStyle: "short" }).format(new Date(timestamp * 1000));
+export const formatDateTime = (timestamp, dateFormat = DATE_FORMAT.SYSTEM, timeFormat = TIME_FORMAT.SYSTEM) => {
+  if (dateFormat === DATE_FORMAT.ISO8601) {
+    return formatDateTimeIso(new Date(timestamp * 1000));
+  }
+  if ([DATE_FORMAT.DMY, DATE_FORMAT.DMY_DOT, DATE_FORMAT.MDY].includes(dateFormat)) {
+    return `${formatDate(timestamp, dateFormat)} ${formatTime(timestamp, timeFormat)}`;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+    hour12: hour12For(timeFormat),
+  }).format(new Date(timestamp * 1000));
+};
 
 export const formatShortDuration = (ms, language) => {
   const seconds = Math.round(ms / 1000);
@@ -385,6 +443,17 @@ export const updateFavicon = async (count) => {
     link.href = faviconCanvas.toDataURL("image/png");
   }
 };
+
+// Matches a URL whose scheme is NOT in the safe list (https, mailto, ...). A scheme
+// (RFC 3986: [a-z][a-z0-9+.-]*) can't contain a slash, query, or hash, so a colon later
+// in the path/query (e.g. foo?x=a:b) is never mistaken for a protocol separator. Relative
+// URLs have no scheme and never match. This strips javascript:/data:/vbscript:/... so React
+// never has to block a javascript: URL at render time -- which it does loudly, throwing an
+// uncaught error.
+const unsafeUrlProtocol = /^\s*(?!(?:https?|ftps?|ircs?|mailto|xmpp|tel):)[a-z][a-z0-9+.-]*:/i;
+
+// Returns the URL unchanged if it uses a safe protocol or is relative, otherwise "".
+export const sanitizeUrl = (url) => (url && unsafeUrlProtocol.test(url) ? "" : url || "");
 
 export const copyToClipboard = (text) => {
   if (navigator.clipboard && window.isSecureContext) {

@@ -264,6 +264,27 @@ func TestServer_StaticSites(t *testing.T) {
 	})
 }
 
+func TestServer_WebApp_MagicLinkLandingPagesNoIndexHeaders(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+
+		// Magic-link landing pages carry a one-time token in the path, so the response must not
+		// leak the token via the Referer header and must not be indexed
+		for _, path := range []string{"/account/email/verify/sometoken", "/account/password/reset/sometoken"} {
+			rr := request(t, s, "GET", path, "", nil)
+			require.Equal(t, 200, rr.Code, path)
+			require.Equal(t, "no-referrer", rr.Header().Get("Referrer-Policy"), path)
+			require.Equal(t, "noindex", rr.Header().Get("X-Robots-Tag"), path)
+		}
+
+		// Ordinary web app routes do not set these headers
+		rr := request(t, s, "GET", "/", "", nil)
+		require.Equal(t, 200, rr.Code)
+		require.Empty(t, rr.Header().Get("Referrer-Policy"))
+		require.Empty(t, rr.Header().Get("X-Robots-Tag"))
+	})
+}
+
 func TestServer_WebEnabled(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		conf := newTestConfig(t, databaseURL)
@@ -740,7 +761,7 @@ func TestServer_PublishMessageInHeaderWithNewlines(t *testing.T) {
 func TestServer_PublishInvalidTopic(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		response := request(t, s, "PUT", "/docs", "fail", nil)
 		require.Equal(t, 40010, toHTTPError(t, response.Body.String()).Code)
 	})
@@ -1231,7 +1252,7 @@ func TestServer_StatsResetter_MessageLimiter_EmailsLimiter(t *testing.T) {
 
 		c := newTestConfigWithAuthFile(t, databaseURL)
 		s := newTestServer(t, c)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 
 		// Publish some messages, and check stats
 		for i := 0; i < 3; i++ {
@@ -1315,18 +1336,20 @@ func TestServer_DailyMessageQuotaFromDatabase(t *testing.T) {
 }
 
 type testMailer struct {
-	count int
-	mu    sync.Mutex
+	count  int
+	lastTo string
+	mu     sync.Mutex
 }
 
-func (t *testMailer) Send(v *visitor, m *model.Message, to string) error {
+func (t *testMailer) SendNotification(to string, m *model.Message, senderIP string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.count++
+	t.lastTo = to
 	return nil
 }
 
-func (t *testMailer) Counts() (total int64, success int64, failure int64) {
+func (t *testMailer) NotificationCounts() (total int64, success int64, failure int64) {
 	return 0, 0, 0
 }
 
@@ -1335,6 +1358,16 @@ func (t *testMailer) Count() int {
 	defer t.mu.Unlock()
 	return t.count
 }
+
+func (t *testMailer) LastTo() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastTo
+}
+
+func (t *testMailer) SendEmailVerification(to, link string) error { return nil }
+
+func (t *testMailer) SendPasswordReset(to, link string) error { return nil }
 
 func TestServer_PublishTooManyRequests_Defaults(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
@@ -1461,7 +1494,7 @@ func TestServer_PublishTooManyRequests_ShortReplenish(t *testing.T) {
 func TestServer_PublishTooManyEmails_Defaults(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		for i := 0; i < 16; i++ {
 			response := request(t, s, "PUT", "/mytopic", fmt.Sprintf("message %d", i), map[string]string{
 				"E-Mail": "test@example.com",
@@ -1481,7 +1514,7 @@ func TestServer_PublishTooManyEmails_Replenish(t *testing.T) {
 		c := newTestConfig(t, databaseURL)
 		c.VisitorEmailLimitReplenish = 500 * time.Millisecond
 		s := newTestServer(t, c)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		for i := 0; i < 16; i++ {
 			response := request(t, s, "PUT", "/mytopic", fmt.Sprintf("message %d", i), map[string]string{
 				"E-Mail": "test@example.com",
@@ -1509,7 +1542,7 @@ func TestServer_PublishTooManyEmails_Replenish(t *testing.T) {
 func TestServer_PublishDelayedEmail_Fail(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		response := request(t, s, "PUT", "/mytopic", "fail", map[string]string{
 			"E-Mail": "test@example.com",
 			"Delay":  "20 min",
@@ -1546,7 +1579,7 @@ func TestServer_PublishEmailNoMailer_Fail(t *testing.T) {
 func TestServer_PublishEmailAddressInvalid(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		addresses := []string{
 			"test@example.com, other@example.com",
 			"invalidaddress",
@@ -1572,7 +1605,7 @@ func TestServer_PublishEmailVerify_VerifiedAddress(t *testing.T) {
 		conf := newTestConfigWithAuthFile(t, databaseURL)
 		conf.SMTPSenderVerify = true
 		s := newTestServer(t, conf)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		defer s.closeDatabases()
 
 		require.Nil(t, s.userManager.AddUser("phil", "phil", user.RoleUser, false))
@@ -1602,7 +1635,7 @@ func TestServer_PublishEmailVerify_BoolValue(t *testing.T) {
 		conf := newTestConfigWithAuthFile(t, databaseURL)
 		conf.SMTPSenderVerify = true
 		s := newTestServer(t, conf)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		defer s.closeDatabases()
 
 		require.Nil(t, s.userManager.AddUser("phil", "phil", user.RoleUser, false))
@@ -1628,17 +1661,97 @@ func TestServer_PublishEmailVerify_BoolValue(t *testing.T) {
 	})
 }
 
-func TestServer_PublishEmailVerify_BoolValue_NoVerify(t *testing.T) {
+func TestServer_PublishEmailVerify_BoolValueUsesPrimary(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		conf := newTestConfigWithAuthFile(t, databaseURL)
+		conf.SMTPSenderVerify = true
+		s := newTestServer(t, conf)
+		mailer := &testMailer{}
+		s.mailer = mailer
+		defer s.closeDatabases()
+
+		require.Nil(t, s.userManager.AddUser("phil", "phil", user.RoleUser, false))
+		u, err := s.userManager.User("phil")
+		require.Nil(t, err)
+		// Two verified emails; the primary is NOT the alphabetically-first one
+		require.Nil(t, s.userManager.AddEmail(u.ID, "aaa@example.com"))
+		require.Nil(t, s.userManager.AddEmail(u.ID, "zzz@example.com"))
+		require.Nil(t, s.userManager.SetPrimaryEmail(u.ID, "zzz@example.com"))
+
+		// "yes" must resolve to the primary email, not emails[0] (alphabetically first)
+		response := request(t, s, "PUT", "/mytopic", "hi", map[string]string{
+			"Email":         "yes",
+			"Authorization": util.BasicAuth("phil", "phil"),
+		})
+		require.Equal(t, 200, response.Code)
+		require.Equal(t, "zzz@example.com", mailer.LastTo())
+	})
+}
+
+func TestServer_PublishEmailVerify_BoolValueNoVerifyUsesPrimary(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		conf := newTestConfigWithAuthFile(t, databaseURL)
+		// smtp-sender-verify intentionally left false (the default)
+		s := newTestServer(t, conf)
+		mailer := &testMailer{}
+		s.mailer = mailer
+		defer s.closeDatabases()
+
+		require.Nil(t, s.userManager.AddUser("phil", "phil", user.RoleUser, false))
+		u, err := s.userManager.User("phil")
+		require.Nil(t, err)
+		require.Nil(t, s.userManager.AddEmail(u.ID, "aaa@example.com"))
+		require.Nil(t, s.userManager.AddEmail(u.ID, "zzz@example.com"))
+		require.Nil(t, s.userManager.SetPrimaryEmail(u.ID, "zzz@example.com"))
+
+		// Even with smtp-sender-verify off, "yes" resolves to the user's primary verified address
+		response := request(t, s, "PUT", "/mytopic", "hi", map[string]string{
+			"Email":         "yes",
+			"Authorization": util.BasicAuth("phil", "phil"),
+		})
+		require.Equal(t, 200, response.Code)
+		require.Equal(t, "zzz@example.com", mailer.LastTo())
+	})
+}
+
+func TestServer_PublishEmailVerify_BoolValueAnonymousRejected(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 
-		// "yes" without smtp-sender-verify should fail with invalid address
+		// "yes" requires an authenticated user (it means "my primary"); anonymous is rejected
 		response := request(t, s, "PUT", "/mytopic", "hi", map[string]string{
 			"Email": "yes",
 		})
 		require.Equal(t, 400, response.Code)
-		require.Equal(t, 40050, toHTTPError(t, response.Body.String()).Code)
+		require.Equal(t, 40053, toHTTPError(t, response.Body.String()).Code)
+	})
+}
+
+func TestServer_PublishEmailVerify_BoolValueProvisionedUsesPrimary(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		hash, err := user.HashPassword("provpass", user.DefaultUserPasswordBcryptCost)
+		require.Nil(t, err)
+		conf := newTestConfigWithAuthFile(t, databaseURL)
+		conf.AuthUsers = []*user.User{{Name: "prov", Hash: hash, Role: user.RoleUser}}
+		s := newTestServer(t, conf)
+		mailer := &testMailer{}
+		s.mailer = mailer
+		defer s.closeDatabases()
+
+		prov, err := s.userManager.User("prov")
+		require.Nil(t, err)
+		require.Nil(t, s.userManager.AddEmail(prov.ID, "aaa@example.com"))
+		require.Nil(t, s.userManager.AddEmail(prov.ID, "zzz@example.com"))
+		require.Nil(t, s.userManager.SetPrimaryEmail(prov.ID, "zzz@example.com"))
+
+		// A provisioned user's "yes" resolves to their chosen primary, not the alphabetically-first
+		response := request(t, s, "PUT", "/mytopic", "hi", map[string]string{
+			"Email":         "yes",
+			"Authorization": util.BasicAuth("prov", "provpass"),
+		})
+		require.Equal(t, 200, response.Code)
+		require.Equal(t, "zzz@example.com", mailer.LastTo())
 	})
 }
 
@@ -1647,7 +1760,7 @@ func TestServer_PublishEmailVerify_Anonymous(t *testing.T) {
 		conf := newTestConfigWithAuthFile(t, databaseURL)
 		conf.SMTPSenderVerify = true
 		s := newTestServer(t, conf)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		defer s.closeDatabases()
 
 		// Anonymous user should be rejected
@@ -1664,7 +1777,7 @@ func TestServer_PublishEmailVerify_NoVerifiedEmails(t *testing.T) {
 		conf := newTestConfigWithAuthFile(t, databaseURL)
 		conf.SMTPSenderVerify = true
 		s := newTestServer(t, conf)
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 		defer s.closeDatabases()
 
 		require.Nil(t, s.userManager.AddUser("phil", "phil", user.RoleUser, false))
@@ -1682,7 +1795,7 @@ func TestServer_PublishEmailVerify_NoVerifiedEmails(t *testing.T) {
 func TestServer_PublishEmailVerify_Disabled_Backwards_Compatible(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = &testMailer{}
+		s.mailer = &testMailer{}
 
 		// Without smtp-sender-verify, any email address should work (backwards compatible)
 		response := request(t, s, "PUT", "/mytopic", "hi", map[string]string{
@@ -1706,11 +1819,11 @@ func TestServer_AccountEmailVerify_UserWithoutTier(t *testing.T) {
 		// Create a user without a tier
 		require.Nil(t, s.userManager.AddUser("ben", "ben", user.RoleUser, false))
 
-		// Verify email request should NOT return 401
-		response := request(t, s, "PUT", "/v1/account/email/verify", `{"email":"ben@example.com"}`, map[string]string{
+		// Starting email verification should NOT return 401
+		response := request(t, s, "PUT", "/v1/account/email", `{"email":"ben@example.com"}`, map[string]string{
 			"Authorization": util.BasicAuth("ben", "ben"),
 		})
-		// The request will fail (SMTP not available), but it must NOT be a 401
+		// The request may fail (SMTP not available), but it must NOT be a 401
 		require.NotEqual(t, 401, response.Code)
 	})
 }
@@ -1731,7 +1844,7 @@ func TestServer_AccountEmailVerify_UserWithoutTier_EmailLimitZero(t *testing.T) 
 		require.Nil(t, s.userManager.AddUser("ben", "ben", user.RoleUser, false))
 
 		// Should be rejected with 401 since email sending is disabled
-		response := request(t, s, "PUT", "/v1/account/email/verify", `{"email":"ben@example.com"}`, map[string]string{
+		response := request(t, s, "PUT", "/v1/account/email", `{"email":"ben@example.com"}`, map[string]string{
 			"Authorization": util.BasicAuth("ben", "ben"),
 		})
 		require.Equal(t, 401, response.Code)
@@ -2139,7 +2252,7 @@ func TestServer_PublishAsJSON_WithEmail(t *testing.T) {
 		t.Parallel()
 		mailer := &testMailer{}
 		s := newTestServer(t, newTestConfig(t, databaseURL))
-		s.smtpSender = mailer
+		s.mailer = mailer
 		body := `{"topic":"mytopic","message":"A message","email":"phil@example.com"}`
 		response := request(t, s, "PUT", "/", body, nil)
 		require.Equal(t, 200, response.Code)
@@ -3522,6 +3635,184 @@ func TestServer_MessageTemplate_Range(t *testing.T) {
 	})
 }
 
+func TestServer_MessageTemplate_ExecutionTimeout(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+		// Nested range over a 1000-element JSON field with a no-output body: no Write ever happens,
+		// so the write-triggered TimeoutWriter never fires. Must be bounded by the executor's
+		// wall-clock deadline instead (GHSA-rhwf-xgc9-m9fp).
+		elems := make([]string, 1000)
+		for i := range elems {
+			elems[i] = "0"
+		}
+		jsonBody := `{"a":[` + strings.Join(elems, ",") + `]}`
+		msg := `{{range .a}}{{range $.a}}` + strings.Repeat(`{{$x := .}}`, 100) + `{{end}}{{end}}done`
+		start := time.Now()
+		response := request(t, s, "POST", "/mytopic", jsonBody, map[string]string{
+			"X-Message":  msg,
+			"X-Template": "1",
+		})
+		elapsed := time.Since(start)
+		require.Equal(t, 400, response.Code)
+		require.Equal(t, 40055, toHTTPError(t, response.Body.String()).Code)
+		require.Less(t, elapsed, 500*time.Millisecond, "template must be interrupted by the deadline, not run to completion (took %s)", elapsed)
+	})
+}
+
+// TestServer_MessageTemplate_DataDrivenNestedRange_TimesOut is the regression for the exact hole the
+// old write-triggered TimeoutWriter missed: a nested {{range}} over a JSON array field with a
+// no-output body calls no function, so only the executor's wall-clock deadline can stop it
+// (GHSA-rhwf-xgc9-m9fp).
+func TestServer_MessageTemplate_DataDrivenNestedRange_TimesOut(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+		elems := make([]string, 1000)
+		for i := range elems {
+			elems[i] = "0"
+		}
+		jsonBody := `{"a":[` + strings.Join(elems, ",") + `]}`
+		msg := `{{range .a}}{{range $.a}}{{range $.a}}{{$x := .}}{{end}}{{end}}{{end}}done`
+		start := time.Now()
+		response := request(t, s, "POST", "/mytopic", jsonBody, map[string]string{
+			"X-Message":  msg,
+			"X-Template": "1",
+		})
+		elapsed := time.Since(start)
+		require.Equal(t, 400, response.Code)
+		require.Equal(t, 40055, toHTTPError(t, response.Body.String()).Code)
+		require.Less(t, elapsed, 500*time.Millisecond, "data-driven nested range should be cut off by the deadline (took %s)", elapsed)
+	})
+}
+
+// TestServer_MessageTemplate_ExpensiveFunctionLoop_TimesOut ensures the deadline also bounds loops
+// whose body calls an expensive function (hashing a large string), where a single call between
+// deadline checks could otherwise overshoot (GHSA-rhwf-xgc9-m9fp).
+func TestServer_MessageTemplate_ExpensiveFunctionLoop_TimesOut(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+		msg := `{{$big := repeat 990 "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"}}{{range until 1000}}{{range until 1000}}{{$h := sha512sum $big}}{{end}}{{end}}`
+		start := time.Now()
+		response := request(t, s, "POST", "/mytopic", `{}`, map[string]string{
+			"X-Message":  msg,
+			"X-Template": "1",
+		})
+		elapsed := time.Since(start)
+		require.Equal(t, 400, response.Code)
+		require.Equal(t, 40055, toHTTPError(t, response.Body.String()).Code)
+		require.Less(t, elapsed, 1500*time.Millisecond, "expensive-function loop should be cut off by the deadline (took %s)", elapsed)
+	})
+}
+
+// TestServer_MessageTemplate_NestedLoopPoC_TimesOut is the exact proof-of-concept from the advisory:
+// a range over a runtime-computed slice, nested, must be bounded by the deadline (GHSA-rhwf-xgc9-m9fp).
+func TestServer_MessageTemplate_NestedLoopPoC_TimesOut(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+		start := time.Now()
+		response := request(t, s, "POST", "/mytopic", `{}`, map[string]string{
+			"X-Message":  `{{$x := until 10000}}{{range $x}}{{range $x}}{{end}}{{end}}done`,
+			"X-Template": "1",
+		})
+		elapsed := time.Since(start)
+		require.Equal(t, 400, response.Code)
+		require.Equal(t, 40055, toHTTPError(t, response.Body.String()).Code)
+		require.Less(t, elapsed, 500*time.Millisecond, "advisory PoC should be cut off by the deadline (took %s)", elapsed)
+	})
+}
+
+func TestServer_MessageTemplate_GenuineError_NotTimeout(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+		// A real runtime error (len of an int) must map to execute-failed, not the timeout code.
+		response := request(t, s, "POST", "/mytopic", `{}`, map[string]string{
+			"X-Message":  `{{ len 5 }}`,
+			"X-Template": "1",
+		})
+		require.Equal(t, 400, response.Code)
+		require.Equal(t, 40045, toHTTPError(t, response.Body.String()).Code)
+	})
+}
+
+// slowBody delivers its data after a delay, simulating a slow client upload of the request body.
+type slowBody struct {
+	data  []byte
+	delay time.Duration
+	done  bool
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	time.Sleep(b.delay)
+	n := copy(p, b.data)
+	b.done = true
+	return n, nil
+}
+
+func (b *slowBody) Close() error { return nil }
+
+// TestServer_MessageTemplate_SlowUpload_NotCountedAgainstDeadline verifies that a slow request-body
+// upload does not consume the template execution deadline: the body is fully read (util.Peek)
+// before the deadline starts, so a trivial template still renders even when the upload alone took
+// longer than the deadline (GHSA-rhwf-xgc9-m9fp).
+func TestServer_MessageTemplate_SlowUpload_NotCountedAgainstDeadline(t *testing.T) {
+	s := newTestServer(t, newTestConfig(t, ""))
+	start := time.Now()
+	// The template runs in ~1ms, far under the deadline, so on correct code it renders fine; the
+	// point is that the deadline starts at execution, not when the (slow) upload began.
+	response := request(t, s, "POST", "/mytopic", `{"foo":"bar"}`, map[string]string{
+		"Template":  "yes",
+		"X-Message": `{{range until 5000}}{{$x := .}}{{end}}hello {{.foo}}`,
+	}, func(r *http.Request) {
+		r.Body = &slowBody{data: []byte(`{"foo":"bar"}`), delay: 3 * templateMaxExecutionTime}
+	})
+	elapsed := time.Since(start)
+	require.Greater(t, elapsed, templateMaxExecutionTime, "the slow upload must outlast the exec deadline for this test to be meaningful")
+	require.Equal(t, 200, response.Code) // Would be 40055 if upload time counted against the deadline
+	m := toMessage(t, response.Body.String())
+	require.Equal(t, "hello bar", m.Message)
+}
+
+// TestServer_MessageTemplate_ClientDisconnect_CancelsRender verifies that canceling the request
+// context (e.g. the client disconnecting) aborts an in-progress template render. The execution
+// deadline is raised well above the cancel delay for this test so that cancellation -- not the
+// deadline -- is what stops the render: a runaway template is canceled 500ms in and must abort
+// shortly after (well under the raised deadline), yielding the generic execute-failed code (40045),
+// not the timeout code (40055).
+//
+// Not parallel: it temporarily raises the package-global templateMaxExecutionTime. Non-parallel
+// tests run in their own phase (parallel tests are paused), so the override is race-free.
+func TestServer_MessageTemplate_ClientDisconnect_CancelsRender(t *testing.T) {
+	origDeadline := templateMaxExecutionTime
+	templateMaxExecutionTime = 30 * time.Second // large enough that only the cancel can stop the render
+	defer func() { templateMaxExecutionTime = origDeadline }()
+
+	s := newTestServer(t, newTestConfig(t, ""))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	response := request(t, s, "POST", "/mytopic", `{}`, map[string]string{
+		"X-Message":  `{{$x := until 10000}}{{range $x}}{{range $x}}{{end}}{{end}}done`,
+		"X-Template": "1",
+	}, func(r *http.Request) {
+		*r = *r.WithContext(ctx)
+	})
+	elapsed := time.Since(start)
+	require.Equal(t, 400, response.Code)
+	require.Equal(t, 40045, toHTTPError(t, response.Body.String()).Code, "a canceled render should map to execute-failed, not the timeout code 40055")
+	require.Greater(t, elapsed, 500*time.Millisecond, "render must still be running when the cancel fires (took %s)", elapsed)
+	require.Less(t, elapsed, 700*time.Millisecond, "request-context cancel should abort the render promptly after firing (took %s)", elapsed)
+}
+
 func TestServer_MessageTemplate_ExceedMessageSize_TemplatedMessageOK(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		t.Parallel()
@@ -3616,11 +3907,18 @@ func TestServer_MessageTemplate_DisallowedCalls(t *testing.T) {
 			`{{- template ""}}`,
 			`{{-
 template ""}}`,
-			`{{      call abc}}`,
-			`{{      define "aa"}}`,
-			`We cannot {{define "aa"}}`,
+			`{{ call "aa"}}`,
+			`{{define "aa"}}hi{{end}}`,
+			`We cannot {{define "aa"}}hi{{end}}`,
 			`We cannot {{ call "aa"}}`,
 			`We cannot {{- template "aa"}}`,
+			`{{block "aa" .}}hi{{end}}`,
+			`We cannot {{- block "aa" .}}hi{{end}}`,
+			// call is a function, not a keyword, so it can hide in non-leading positions that a
+			// raw-string regex misses -- the parse-tree walk catches all of them.
+			`{{if call .x}}x{{end}}`,
+			`{{$y := call .x}}`,
+			`{{index (call .x) 0}}`,
 		}
 		for _, disallowedTemplate := range disallowedTemplates {
 			messageTemplate := disallowedTemplate
@@ -4026,6 +4324,40 @@ func TestServer_DeleteMessage(t *testing.T) {
 	})
 }
 
+func TestServer_DeleteMessage_GET(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+
+		// Publish a message with a sequence ID
+		response := request(t, s, "PUT", "/mytopic/seq123", "original message", nil)
+		require.Equal(t, 200, response.Code)
+		msg := toMessage(t, response.Body.String())
+		require.Equal(t, "seq123", msg.SequenceID)
+		require.Equal(t, "message", msg.Event)
+
+		// Delete the message using GET method (/topic/seq/delete)
+		response = request(t, s, "GET", "/mytopic/seq123/delete", "", nil)
+		require.Equal(t, 200, response.Code)
+		deleteMsg := toMessage(t, response.Body.String())
+		require.Equal(t, "seq123", deleteMsg.SequenceID)
+		require.Equal(t, "message_delete", deleteMsg.Event)
+
+		// Poll and verify both messages are returned
+		response = request(t, s, "GET", "/mytopic/json?poll=1", "", nil)
+		require.Equal(t, 200, response.Code)
+		lines := strings.Split(strings.TrimSpace(response.Body.String()), "\n")
+		require.Equal(t, 2, len(lines))
+
+		msg1 := toMessage(t, lines[0])
+		msg2 := toMessage(t, lines[1])
+		require.Equal(t, "message", msg1.Event)
+		require.Equal(t, "message_delete", msg2.Event)
+		require.Equal(t, "seq123", msg1.SequenceID)
+		require.Equal(t, "seq123", msg2.SequenceID)
+	})
+}
+
 func TestServer_ClearMessage(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		t.Parallel()
@@ -4076,6 +4408,33 @@ func TestServer_ClearMessage_ReadEndpoint(t *testing.T) {
 		clearMsg := toMessage(t, response.Body.String())
 		require.Equal(t, "seq789", clearMsg.SequenceID)
 		require.Equal(t, "message_clear", clearMsg.Event)
+	})
+}
+
+func TestServer_ClearMessage_GET(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+
+		// 1. Test GET /topic/seq-id/clear
+		response := request(t, s, "PUT", "/mytopic/seq456", "original message 1", nil)
+		require.Equal(t, 200, response.Code)
+
+		response = request(t, s, "GET", "/mytopic/seq456/clear", "", nil)
+		require.Equal(t, 200, response.Code)
+		clearMsg1 := toMessage(t, response.Body.String())
+		require.Equal(t, "seq456", clearMsg1.SequenceID)
+		require.Equal(t, "message_clear", clearMsg1.Event)
+
+		// 2. Test GET /topic/seq-id/read
+		response = request(t, s, "PUT", "/mytopic/seq789", "original message 2", nil)
+		require.Equal(t, 200, response.Code)
+
+		response = request(t, s, "GET", "/mytopic/seq789/read", "", nil)
+		require.Equal(t, 200, response.Code)
+		clearMsg2 := toMessage(t, response.Body.String())
+		require.Equal(t, "seq789", clearMsg2.SequenceID)
+		require.Equal(t, "message_clear", clearMsg2.Event)
 	})
 }
 
@@ -4271,6 +4630,41 @@ func TestServer_DeleteScheduledMessage(t *testing.T) {
 
 		// Delete the scheduled message
 		response = request(t, s, "DELETE", "/mytopic/delete-sched-seq", "", nil)
+		require.Equal(t, 200, response.Code)
+		deleteMsg := toMessage(t, response.Body.String())
+		require.Equal(t, "delete-sched-seq", deleteMsg.SequenceID)
+		require.Equal(t, "message_delete", deleteMsg.Event)
+
+		// Verify scheduled message was deleted, only delete event remains
+		response = request(t, s, "GET", "/mytopic/json?poll=1&scheduled=1", "", nil)
+		require.Equal(t, 200, response.Code)
+		messages = toMessages(t, response.Body.String())
+		require.Equal(t, 1, len(messages))
+		require.Equal(t, "message_delete", messages[0].Event)
+		require.Equal(t, "delete-sched-seq", messages[0].SequenceID)
+	})
+}
+
+func TestServer_DeleteScheduledMessage_GET(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		t.Parallel()
+		s := newTestServer(t, newTestConfig(t, databaseURL))
+
+		// Publish a scheduled message (future delivery)
+		response := request(t, s, "PUT", "/mytopic/delete-sched-seq?delay=1h", "scheduled message to delete", nil)
+		require.Equal(t, 200, response.Code)
+		msg := toMessage(t, response.Body.String())
+		require.Equal(t, "delete-sched-seq", msg.SequenceID)
+
+		// Verify scheduled message exists
+		response = request(t, s, "GET", "/mytopic/json?poll=1&scheduled=1", "", nil)
+		require.Equal(t, 200, response.Code)
+		messages := toMessages(t, response.Body.String())
+		require.Equal(t, 1, len(messages))
+		require.Equal(t, "scheduled message to delete", messages[0].Message)
+
+		// Delete the scheduled message using GET method (/topic/seq/delete)
+		response = request(t, s, "GET", "/mytopic/delete-sched-seq/delete", "", nil)
 		require.Equal(t, 200, response.Code)
 		deleteMsg := toMessage(t, response.Body.String())
 		require.Equal(t, "delete-sched-seq", deleteMsg.SequenceID)

@@ -30,7 +30,7 @@ export const useConnectionListeners = (account, subscriptions, users, webPushTop
     // wsSubscriptions should stay stable unless the list of subscription IDs changes. Without the memo, the connection
     // listener calls a refresh for no reason. This isn't a problem due to the makeConnectionId, but it triggers an
     // unnecessary recomputation for every received message.
-    [JSON.stringify({ subscriptions: subscriptions?.map(({ id }) => id), webPushTopics })]
+    [JSON.stringify({ subscriptions: subscriptions?.map(({ id }) => id), webPushTopics })],
   );
 
   // Register listeners for incoming messages, and connection state changes
@@ -103,7 +103,7 @@ export const useConnectionListeners = (account, subscriptions, users, webPushTop
     },
     // We have to disable dep checking for "navigate". This is fine, it never changes.
 
-    []
+    [],
   );
 
   // Sync topic listener: For accounts with sync_topic, subscribe to an internal topic
@@ -111,7 +111,7 @@ export const useConnectionListeners = (account, subscriptions, users, webPushTop
     if (!account || !account.sync_topic) {
       return;
     }
-    subscriptionManager.add(config.base_url, account.sync_topic, { internal: true }); // Dangle!
+    subscriptionManager.upsert(config.base_url, account.sync_topic, { internal: true }); // Dangle!
   }, [account]);
 
   // When subscriptions or users change, refresh the connections
@@ -139,7 +139,7 @@ export const useAutoSubscribe = (subscriptions, selected) => {
       const baseUrl = params.baseUrl ? expandSecureUrl(params.baseUrl) : config.base_url;
       console.log(`[Hooks] Auto-subscribing to ${topicUrl(baseUrl, params.topic)}`);
       (async () => {
-        const subscription = await subscriptionManager.add(baseUrl, params.topic);
+        const subscription = await subscriptionManager.upsert(baseUrl, params.topic);
         if (session.exists()) {
           try {
             await accountApi.addSubscription(baseUrl, params.topic);
@@ -233,7 +233,7 @@ export const useWebPushTopics = () => {
   const topics = useLiveQuery(
     async () => subscriptionManager.webPushTopics(pushPossible),
     // invalidate (reload) query when these values change
-    [pushPossible]
+    [pushPossible],
   );
 
   useWebPushListener(topics);

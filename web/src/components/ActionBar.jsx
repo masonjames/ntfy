@@ -6,15 +6,19 @@ import { useLocation, useNavigate } from "react-router-dom";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import NotificationsOffIcon from "@mui/icons-material/NotificationsOff";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import { useTranslation } from "react-i18next";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
-import { Logout, Person, Settings } from "@mui/icons-material";
+import Logout from "@mui/icons-material/Logout";
+import Person from "@mui/icons-material/Person";
+import Settings from "@mui/icons-material/Settings";
 import session from "../app/Session";
 import logo from "../img/ntfy.svg";
 import subscriptionManager from "../app/SubscriptionManager";
 import routes from "./routes";
 import db from "../app/db";
 import { topicDisplayName } from "../app/utils";
+import { fadeNavigate } from "../app/transition";
 import Navigation from "./Navigation";
 import accountApi from "../app/AccountApi";
 import PopupMenu from "./PopupMenu";
@@ -88,6 +92,7 @@ const ActionBar = (props) => {
         <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
           {title}
         </Typography>
+        {isLaunchedPWA && <ReloadIcon />}
         {props.selected && <SettingsIcons subscription={props.selected} onUnsubscribe={props.onUnsubscribe} />}
         <ProfileIcon />
       </Toolbar>
@@ -124,6 +129,31 @@ const SettingsIcons = (props) => {
   );
 };
 
+// ReloadIcon hard-refreshes the app. A plain reload would just serve the precached PWA shell,
+// so we first purge the service worker caches to force fresh assets from the network.
+const ReloadIcon = () => {
+  const { t } = useTranslation();
+
+  const handleReload = async () => {
+    try {
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch (e) {
+      console.warn("[ActionBar] Error clearing caches during reload", e);
+    } finally {
+      window.location.reload();
+    }
+  };
+
+  return (
+    <IconButton color="inherit" size="large" edge="end" onClick={handleReload} aria-label={t("action_bar_reload")}>
+      <RefreshIcon />
+    </IconButton>
+  );
+};
+
 const ProfileIcon = () => {
   const { t } = useTranslation();
   const [anchorEl, setAnchorEl] = useState(null);
@@ -143,7 +173,7 @@ const ProfileIcon = () => {
       await accountApi.logout();
       await db().delete();
     } finally {
-      await session.resetAndRedirect(routes.app);
+      await session.resetAndRedirect(routes.app, { fade: true });
     }
   };
 
@@ -155,12 +185,23 @@ const ProfileIcon = () => {
         </IconButton>
       )}
       {!session.exists() && config.enable_login && (
-        <Button color="inherit" variant="text" onClick={() => navigate(routes.login)} sx={{ m: 1 }} aria-label={t("action_bar_sign_in")}>
+        <Button
+          color="inherit"
+          variant="text"
+          onClick={() => fadeNavigate(navigate, routes.login)}
+          sx={{ m: 1 }}
+          aria-label={t("action_bar_sign_in")}
+        >
           {t("action_bar_sign_in")}
         </Button>
       )}
       {!session.exists() && config.enable_signup && (
-        <Button color="inherit" variant="outlined" onClick={() => navigate(routes.signup)} aria-label={t("action_bar_sign_up")}>
+        <Button
+          color="inherit"
+          variant="outlined"
+          onClick={() => fadeNavigate(navigate, routes.signup)}
+          aria-label={t("action_bar_sign_up")}
+        >
           {t("action_bar_sign_up")}
         </Button>
       )}

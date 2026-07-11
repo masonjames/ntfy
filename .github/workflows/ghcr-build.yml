@@ -197,7 +197,6 @@ jobs:
           owner: masonjames
           repositories: platform-infra
           permission-actions: write
-          permission-checks: read
           permission-contents: read
 
       - name: Dispatch platform-owned release and wait for verification
@@ -248,10 +247,27 @@ jobs:
             --arg platform_run_url "$platform_run_url" \
             '{candidate_image:$candidate_image,source_sha:$source_sha,caller_run_url:$caller_run_url,platform_run_url:$platform_run_url}' \
             > ntfy-release-evidence.jsonl
-          gh run watch "$platform_run_id" \
-            --repo masonjames/platform-infra \
-            --exit-status \
-            --interval 10
+          platform_result=""
+          while true; do
+            platform_result=$(gh api \
+              "repos/masonjames/platform-infra/actions/runs/$platform_run_id")
+            platform_status=$(jq -r .status <<< "$platform_result")
+            if [ "$platform_status" = "completed" ]; then
+              break
+            fi
+            sleep 10
+          done
+          platform_status=$(jq -r .status <<< "$platform_result")
+          platform_conclusion=$(jq -r '.conclusion // ""' <<< "$platform_result")
+          jq -n \
+            --arg platform_status "$platform_status" \
+            --arg platform_conclusion "$platform_conclusion" \
+            '{platform_status:$platform_status,platform_conclusion:$platform_conclusion}' \
+            >> ntfy-release-evidence.jsonl
+          if [ "$platform_conclusion" != "success" ]; then
+            echo "::error::Platform release concluded: $platform_conclusion"
+            exit 1
+          fi
 
       - name: Upload deployment evidence
         if: always() && steps.window.outputs.eligible == 'true'

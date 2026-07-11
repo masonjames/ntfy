@@ -5,6 +5,7 @@ on:
       - main
 jobs:
   publish-docs:
+    if: github.repository == 'binwiederhier/ntfy'
     runs-on: ubuntu-latest
     steps:
       -

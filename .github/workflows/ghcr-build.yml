@@ -24,25 +24,135 @@ concurrency:
 jobs:
   build:
     name: Build immutable candidate
+    runs-on: ubuntu-latest
     permissions:
       attestations: write
       contents: read
       id-token: write
       packages: write
-    uses: masonjames/platform-infra/.github/workflows/ghcr-build-webhook.yml@bbc83cf3e8cd8ea153aa440d0509ad34b4fb5797
-    with:
-      dockerfile: ./Dockerfile-build
-      context: .
-      image_name: masonjames/ntfy
-      platforms: linux/amd64
-      deploy_on_branch: __build_only__
-      push_latest: false
-      attest_image: true
-      source_sha: ${{ github.sha }}
-      build_args: |
-        VERSION=upstream-main-${{ github.sha }}
-        COMMIT=${{ github.sha }}
-        SOURCE_URL=https://github.com/masonjames/ntfy
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      immutable_image: ${{ steps.immutable.outputs.image }}
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify source provenance
+        id: source
+        env:
+          CLAIMED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha=$(git rev-parse HEAD)
+          [[ "$CLAIMED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$actual_source_sha" = "$CLAIMED_SOURCE_SHA" ]
+          echo "sha=$actual_source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Prepare immutable image metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v5.10.0
+        with:
+          images: ghcr.io/masonjames/ntfy
+          tags: |
+            type=raw,value=${{ steps.source.outputs.sha }}
+            type=raw,value=sha-${{ steps.source.outputs.sha }}
+
+      - name: Build and push immutable image
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile-build
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          build-args: |
+            VERSION=upstream-main-${{ steps.source.outputs.sha }}
+            COMMIT=${{ steps.source.outputs.sha }}
+            SOURCE_URL=https://github.com/masonjames/ntfy
+          provenance: mode=max
+          sbom: true
+
+      - name: Resolve immutable digest reference
+        id: immutable
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "image=ghcr.io/masonjames/ntfy@$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Sign build provenance attestation
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/masonjames/ntfy
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify build provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_IMAGE: ${{ steps.immutable.outputs.image }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMMUTABLE_IMAGE}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --format json > provenance-verification.json
+          jq -e 'length > 0' provenance-verification.json >/dev/null
+
+      - name: Enforce critical vulnerability threshold
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.immutable.outputs.image }}
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          format: table
+          output: trivy-image-gate.txt
+          severity: CRITICAL
+          exit-code: '1'
+
+      - name: Upload candidate security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ntfy-candidate-security-${{ steps.source.outputs.sha }}
+          path: |
+            trivy-image-gate.txt
+            provenance-verification.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Summarize immutable candidate
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMMUTABLE_IMAGE: ${{ steps.immutable.outputs.image }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          {
+            echo '## ntfy immutable candidate'
+            echo
+            echo "- Source: $SOURCE_SHA"
+            echo "- Digest: $IMAGE_DIGEST"
+            echo "- Image: $IMMUTABLE_IMAGE"
+            echo '- Mutable latest tag: not published'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Verified production promotion

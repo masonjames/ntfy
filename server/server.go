@@ -628,7 +628,7 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visit
 	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountPasswordResetRequestPath {
 		return s.ensureEmailsEnabled(s.limitRequests(s.handleAccountPasswordResetRequest))(w, r, v) // Unauthenticated
 	} else if r.Method == http.MethodPost && r.URL.Path == apiAccountPasswordResetPath {
-		return s.ensureEmailsEnabled(s.limitRequests(s.handleAccountPasswordReset))(w, r, v) // Unauthenticated
+		return s.ensureUserManager(s.limitRequests(s.handleAccountPasswordReset))(w, r, v) // Unauthenticated; CLI-generated tokens do not require SMTP
 	} else if r.Method == http.MethodPost && apiWebPushPath == r.URL.Path {
 		return s.ensureWebPushEnabled(s.limitRequests(s.handleWebPushUpdate))(w, r, v)
 	} else if r.Method == http.MethodDelete && apiWebPushPath == r.URL.Path {

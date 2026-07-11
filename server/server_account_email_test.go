@@ -435,6 +435,24 @@ func TestAccount_PasswordReset_InvalidToken(t *testing.T) {
 	})
 }
 
+func TestAccount_PasswordReset_ConfirmWithoutSMTP(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, databaseURL string) {
+		conf := newTestConfigWithAuthFile(t, databaseURL)
+		s := newTestServer(t, conf)
+		defer s.closeDatabases()
+		require.Nil(t, s.userManager.AddUser("ben", "ben", user.RoleUser, false))
+		ben, err := s.userManager.User("ben")
+		require.Nil(t, err)
+		token, err := s.userManager.AddMagicLink(user.MagicLinkKindPasswordReset, ben.ID, "", passwordResetTokenExpiry)
+		require.Nil(t, err)
+
+		rr := request(t, s, "POST", "/v1/account/password/reset", fmt.Sprintf(`{"token":"%s","password":"brandnew"}`, token), nil)
+		require.Equal(t, 200, rr.Code)
+		require.True(t, canLogin(t, s, "ben", "brandnew"))
+		require.False(t, canLogin(t, s, "ben", "ben"))
+	})
+}
+
 func TestAccount_Email_AddDuplicateVerified(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, databaseURL string) {
 		s, mailer, auth := newEmailTestServer(t, databaseURL)

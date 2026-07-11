@@ -13,7 +13,7 @@ import subscriptionManager from "../app/SubscriptionManager";
 import userManager from "../app/UserManager";
 import { expandUrl, getKebabCaseLangStr, darkModeEnabled, updateFavicon } from "../app/utils";
 import ErrorBoundary from "./ErrorBoundary";
-import routes from "./routes";
+import routes, { isPublicAuthPath } from "./routes";
 import { useAccountListener, useBackgroundProcesses, useConnectionListeners, useWebPushTopics } from "./hooks";
 import PublishDialog from "./PublishDialog";
 import Messaging from "./Messaging";
@@ -64,7 +64,7 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    if (!session.exists() && config.require_login && window.location.pathname !== routes.login) {
+    if (!session.exists() && config.require_login && !isPublicAuthPath(window.location.pathname)) {
       window.location.href = routes.login;
     }
   }, []);

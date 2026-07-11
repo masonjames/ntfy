@@ -1,0 +1,110 @@
+name: Prepare upstream ntfy synchronization
+
+on:
+  schedule:
+    - cron: '17 13 * * 2'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ntfy-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open reviewed upstream sync PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Checkout Mason main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream without executing candidate code
+        id: merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/binwiederhier/ntfy.git 2>/dev/null || true
+          git fetch --prune upstream main --tags
+          upstream_sha=$(git rev-parse upstream/main)
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch="chore/sync-upstream-${upstream_sha:0:12}"
+          git checkout -b "$branch"
+          git config user.name "masonjames-platform[bot]"
+          git config user.email "masonjames-platform[bot]@users.noreply.github.com"
+          if ! git merge --no-ff upstream/main -m "Merge upstream ntfy through ${upstream_sha:0:12}"; then
+            git merge --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh auth setup-git
+          git push --set-upstream origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open review PR
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --head "$BRANCH" --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "$existing"
+            exit 0
+          fi
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "Sync upstream ntfy through ${UPSTREAM_SHA:0:12}" \
+            --body "Automated clean merge of \`binwiederhier/ntfy@${UPSTREAM_SHA}\`. Production deployment remains separate and requires complete CI, immutable build evidence, backup, verification, and rollback gates." \
+            --assignee masonjames
+
+      - name: Create or update conflict issue
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          gh label create automated-maintenance --repo "$GITHUB_REPOSITORY" \
+            --color 1d76db --description "Created by automated maintenance" --force
+          gh label create upstream-conflict --repo "$GITHUB_REPOSITORY" \
+            --color d93f0b --description "Upstream synchronization requires manual conflict resolution" --force
+          title="Upstream ntfy merge conflict: ${UPSTREAM_SHA:0:12}"
+          body="The clean runner could not merge \`binwiederhier/ntfy@${UPSTREAM_SHA}\` into Mason main. No branch was pushed and no production state changed. Resolve this in a fresh worktree and preserve the Mason workflow files."
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" \
+              --assignee masonjames --label automated-maintenance --label upstream-conflict
+          fi
+          exit 1

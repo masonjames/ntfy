@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25-bookworm@sha256:a9c020ee3d1508c7be5435c262434e3d3fc1d0e76a11afeb9ddae7d60bc86aa4 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -50,14 +50,17 @@ ADD ./mail ./mail
 ADD ./s3 ./s3
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build make VERSION=$VERSION COMMIT=$COMMIT cli-linux-server
 
-FROM alpine
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 ARG VERSION=dev
+ARG COMMIT=unknown
+ARG SOURCE_URL=https://github.com/masonjames/ntfy
 
 LABEL org.opencontainers.image.authors="philipp.heckel@gmail.com"
 LABEL org.opencontainers.image.url="https://ntfy.sh/"
 LABEL org.opencontainers.image.documentation="https://docs.ntfy.sh/"
-LABEL org.opencontainers.image.source="https://github.com/binwiederhier/ntfy"
+LABEL org.opencontainers.image.source="$SOURCE_URL"
+LABEL org.opencontainers.image.revision="$COMMIT"
 LABEL org.opencontainers.image.vendor="Philipp C. Heckel"
 LABEL org.opencontainers.image.licenses="Apache-2.0, GPL-2.0"
 LABEL org.opencontainers.image.title="ntfy"

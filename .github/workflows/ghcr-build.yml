@@ -1,179 +1,182 @@
-name: Build and Push to GHCR
+name: Build, attest, and release ntfy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   schedule:
-    # Weekly rebuild on Monday at 07:00 UTC (picks up base image security patches)
-    - cron: '0 7 * * 1'
+    # One of these is 03:20 America/New_York in either EDT or EST. The
+    # maintenance gate rejects the other invocation.
+    - cron: '20 7 * * 0'
+    - cron: '20 8 * * 0'
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the built digest outside the routine schedule
+        type: boolean
+        default: true
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: masonjames/ntfy
+permissions: {}
+
+concurrency:
+  group: ntfy-immutable-release
+  cancel-in-progress: false
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Image
-    runs-on: ubuntu-latest
-
+  build:
+    name: Build immutable candidate
     permissions:
+      attestations: write
       contents: read
+      id-token: write
       packages: write
-
-    outputs:
-      image_digest: ${{ steps.build.outputs.digest }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
-
-      - name: Get version info
-        id: version
-        run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          COMMIT=$(git rev-parse --short HEAD)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile-build
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ steps.version.outputs.commit }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-
-      - name: Output image info
-        run: |
-          echo "Image pushed to GHCR"
-          echo "Tags: ${{ steps.meta.outputs.tags }}"
-          echo "Digest: ${{ steps.build.outputs.digest }}"
+    uses: masonjames/platform-infra/.github/workflows/ghcr-build-webhook.yml@bbc83cf3e8cd8ea153aa440d0509ad34b4fb5797
+    with:
+      dockerfile: ./Dockerfile-build
+      context: .
+      image_name: masonjames/ntfy
+      platforms: linux/amd64
+      deploy_on_branch: __build_only__
+      push_latest: false
+      attest_image: true
+      source_sha: ${{ github.sha }}
+      build_args: |
+        VERSION=upstream-main-${{ github.sha }}
+        COMMIT=${{ github.sha }}
+        SOURCE_URL=https://github.com/masonjames/ntfy
 
   deploy:
-    name: Deploy to Dokploy
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
+    name: Verified production promotion
+    needs: build
+    if: >-
+      (github.event_name == 'schedule' && vars.NTFY_AUTO_DEPLOY_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    runs-on: [self-hosted, hetzner]
+    permissions:
+      contents: read
     outputs:
-      deploy_failed: ${{ steps.webhook.outputs.deploy_failed }}
-
+      eligible: ${{ steps.window.outputs.eligible }}
     steps:
-      - name: Redeploy via Dokploy Webhook
-        id: webhook
+      - name: Enforce the routine maintenance window
+        id: window
         env:
-          WEBHOOK_URL: ${{ secrets.DOKPLOY_WEBHOOK_NTFY }}
-        if: env.WEBHOOK_URL != ''
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if ! curl -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            --fail --silent --show-error 2>&1; then
-            echo "::warning::Dokploy webhook failed — deployment may not have triggered"
-            echo "deploy_failed=true" >> $GITHUB_OUTPUT
-          else
-            echo "deploy_failed=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+            echo "Explicit dispatch authorized an out-of-window security release."
+            exit 0
           fi
 
-  notify-failure:
-    name: Notify on Failure
-    needs: [build-and-push, deploy]
-    if: always() && (failure() || needs.deploy.outputs.deploy_failed == 'true')
+          local_slot=$(TZ=America/New_York date +%u-%H%M)
+          if [[ "$local_slot" =~ ^7-03[0-5][0-9]$ ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+            echo "Routine Sunday maintenance slot: $local_slot America/New_York"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping duplicate UTC schedule outside the 03:00 local hour: $local_slot"
+          fi
+
+      - name: Deploy immutable image with automatic data rollback
+        if: steps.window.outputs.eligible == 'true'
+        env:
+          CANDIDATE_IMAGE: ${{ needs.build.outputs.immutable_image }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_IMAGE" =~ ^ghcr\.io/masonjames/ntfy@sha256:[0-9a-f]{64}$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          sudo /usr/local/bin/ntfy-release deploy "$CANDIDATE_IMAGE" "$SOURCE_SHA" \
+            | tee ntfy-release-evidence.jsonl
+
+      - name: Upload deployment evidence
+        if: always() && steps.window.outputs.eligible == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ntfy-deployment-${{ needs.build.outputs.source_sha }}
+          path: ntfy-release-evidence.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
+  report-failure:
+    name: Create or update maintenance failure issue
+    needs: [build, deploy]
+    if: >-
+      always() &&
+      (needs.build.result == 'failure' || needs.deploy.result == 'failure')
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Determine failure type
-        id: failure_info
-        run: |
-          if [ "${{ needs.build-and-push.result }}" = "failure" ]; then
-            echo "title=ntfy GHCR build failed" >> $GITHUB_OUTPUT
-            echo "subject=ntfy Build FAILED" >> $GITHUB_OUTPUT
-            echo "detail=Docker image build failed for ntfy (${GITHUB_EVENT_NAME})." >> $GITHUB_OUTPUT
-          elif [ "${{ needs.deploy.outputs.deploy_failed }}" = "true" ]; then
-            echo "title=ntfy deploy webhook failed" >> $GITHUB_OUTPUT
-            echo "subject=ntfy Deploy FAILED" >> $GITHUB_OUTPUT
-            echo "detail=Dokploy webhook deploy failed for ntfy. Image was built but deployment did not trigger." >> $GITHUB_OUTPUT
-          else
-            echo "title=ntfy build/deploy failed" >> $GITHUB_OUTPUT
-            echo "subject=ntfy Build/Deploy FAILED" >> $GITHUB_OUTPUT
-            echo "detail=Build or deploy failed for ntfy (${GITHUB_EVENT_NAME})." >> $GITHUB_OUTPUT
-          fi
-
-      - name: Send ntfy notification
+      - name: Record assigned deduplicated issue
         env:
-          NTFY_BASE_URL: ${{ secrets.NTFY_BASE_URL }}
-          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
-        if: env.NTFY_BASE_URL != '' && env.NTFY_TOKEN != ''
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          CANDIDATE_IMAGE: ${{ needs.build.outputs.immutable_image }}
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          HTTP_CODE=$(curl -sS -o /tmp/ntfy_resp.txt -w '%{http_code}' \
-            -X POST "${NTFY_BASE_URL}/platform-alerts" \
-            -H "Authorization: Bearer ${NTFY_TOKEN}" \
-            -H "Title: ${{ steps.failure_info.outputs.title }}" \
-            -H "Priority: high" \
-            -H "Tags: rotating_light,ntfy" \
-            -H "Click: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            --data-raw "${{ steps.failure_info.outputs.detail }} Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+          set -euo pipefail
+          for spec in \
+            'automated-maintenance|1d76db|Created by automated maintenance' \
+            'deployment-rollback|d93f0b|Deployment failed and rollback was attempted' \
+            'service:ntfy|0052cc|ntfy notification service lifecycle' \
+            'severity:high|d93f0b|High-priority maintenance failure'; do
+            IFS='|' read -r name color description <<< "$spec"
+            gh label create "$name" --repo "$GITHUB_REPOSITORY" \
+              --color "$color" --description "$description" --force
+          done
 
-          if [[ ! "$HTTP_CODE" =~ ^2[0-9]{2}$ ]]; then
-            echo "::warning::ntfy notification failed (HTTP $HTTP_CODE): $(cat /tmp/ntfy_resp.txt)"
+          if [ "$BUILD_RESULT" = "failure" ]; then
+            failure_stage=build
           else
-            echo "ntfy notification sent (HTTP $HTTP_CODE)"
+            failure_stage=deploy
+          fi
+          title="Automated ntfy ${failure_stage} failure: ${SOURCE_SHA:0:12}"
+          body=$(printf '%s\n' \
+            'The immutable ntfy release workflow failed and requires Mason review.' \
+            '' \
+            "- Source: $SOURCE_SHA" \
+            "- Candidate: ${CANDIDATE_IMAGE:-unavailable}" \
+            "- Failure stage: $failure_stage" \
+            "- Build result: $BUILD_RESULT" \
+            "- Deploy result: $DEPLOY_RESULT" \
+            "- Evidence: $WORKFLOW_URL" \
+            '' \
+            'The host actuator restores the prior Compose file and both stopped-volume archives when mutation has begun. Verify the workflow artifact and /var/lib/ntfy-release/evidence/ before closing.')
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" \
+              --assignee masonjames \
+              --label automated-maintenance \
+              --label deployment-rollback \
+              --label service:ntfy \
+              --label severity:high
           fi
 
-      - name: Send email notification via Resend
+  comment-on-prior-failures:
+    name: Record later success without auto-closing issues
+    needs: [build, deploy]
+    if: needs.build.result == 'success' && needs.deploy.result == 'success' && needs.deploy.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on open rollback issues
         env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-        if: env.RESEND_API_KEY != ''
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-          PAYLOAD=$(cat <<JSONEOF
-          {
-            "from": "alerts@platform-core.masonjames.com",
-            "to": ["me@masonjames.com"],
-            "subject": "${{ steps.failure_info.outputs.subject }}",
-            "html": "<!doctype html><html><head><meta charset='UTF-8'/></head><body style='margin:0;padding:0;background:#f6f8fb;font-family:Inter,Helvetica,Arial,sans-serif;color:#0f172a;'><table role='presentation' cellpadding='0' cellspacing='0' width='100%' style='background:#f6f8fb;padding:24px 0;'><tr><td align='center'><table role='presentation' cellpadding='0' cellspacing='0' width='600' style='background:#ffffff;border-radius:16px;box-shadow:0 10px 40px rgba(15,23,42,0.08);overflow:hidden;'><tr><td style='padding:24px 32px 12px 32px;'><div style='font-size:18px;font-weight:700;color:#111827;'>Mason James Hosting</div><div style='font-size:14px;color:#64748b;margin-top:4px;'>CI/CD Alert</div></td></tr><tr><td style='background:#fef2f2;padding:16px 32px;'><div style='font-size:15px;font-weight:600;color:#991b1b;'>${{ steps.failure_info.outputs.subject }}</div></td></tr><tr><td style='padding:16px 32px 12px 32px;'><div style='font-size:15px;line-height:1.6;color:#0f172a;'>${{ steps.failure_info.outputs.detail }}</div></td></tr><tr><td align='center' style='padding:16px 32px;'><a href='${RUN_URL}' style='background:#2563eb;color:#fff;padding:12px 20px;border-radius:8px;font-weight:600;text-decoration:none;font-family:Inter,Helvetica,Arial,sans-serif;'>View GitHub Actions Run</a></td></tr><tr><td style='padding:16px 32px;'><div style='height:1px;background:#e2e8f0;'></div></td></tr><tr><td style='padding:0 32px 24px 32px;font-size:12px;line-height:1.5;color:#94a3b8;'>Repository: ${GITHUB_REPOSITORY} · Event: ${GITHUB_EVENT_NAME} · Ref: ${GITHUB_REF}</td></tr></table></td></tr></table></body></html>"
-          }
-          JSONEOF
-          )
-
-          HTTP_CODE=$(curl -sS -o /tmp/resend_resp.txt -w '%{http_code}' \
-            -X POST https://api.resend.com/emails \
-            -H "Authorization: Bearer ${RESEND_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-
-          if [[ ! "$HTTP_CODE" =~ ^2[0-9]{2}$ ]]; then
-            echo "::warning::Resend email failed (HTTP $HTTP_CODE): $(cat /tmp/resend_resp.txt)"
-          else
-            echo "Email notification sent (HTTP $HTTP_CODE)"
-          fi
+          set -euo pipefail
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --label deployment-rollback --label service:ntfy \
+            --json number --jq '.[].number' | while read -r issue; do
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
+                --body "A later release of \`${SOURCE_SHA}\` completed successfully: ${WORKFLOW_URL}. This issue remains open for Mason review."
+            done

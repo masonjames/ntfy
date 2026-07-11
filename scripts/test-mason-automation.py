@@ -18,6 +18,8 @@ assert "permission-actions: write" in release
 assert "permission-checks:" not in release
 assert 'repos/masonjames/platform-infra/actions/runs/$platform_run_id' in release
 assert 'platform_conclusion" != "success"' in release
+assert "while true; do" in release
+assert "seq 1 120" not in release
 assert "gh run watch" not in release
 assert "runs-on: [self-hosted, hetzner]" not in release
 assert "vars.NTFY_AUTO_DEPLOY_ENABLED == 'true'" in release

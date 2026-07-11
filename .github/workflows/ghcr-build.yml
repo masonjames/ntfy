@@ -248,7 +248,7 @@ jobs:
             '{candidate_image:$candidate_image,source_sha:$source_sha,caller_run_url:$caller_run_url,platform_run_url:$platform_run_url}' \
             > ntfy-release-evidence.jsonl
           platform_result=""
-          for _ in $(seq 1 120); do
+          while true; do
             platform_result=$(gh api \
               "repos/masonjames/platform-infra/actions/runs/$platform_run_id")
             platform_status=$(jq -r .status <<< "$platform_result")
@@ -264,10 +264,6 @@ jobs:
             --arg platform_conclusion "$platform_conclusion" \
             '{platform_status:$platform_status,platform_conclusion:$platform_conclusion}' \
             >> ntfy-release-evidence.jsonl
-          if [ "$platform_status" != "completed" ]; then
-            echo "::error::Timed out waiting for the platform release run."
-            exit 1
-          fi
           if [ "$platform_conclusion" != "success" ]; then
             echo "::error::Platform release concluded: $platform_conclusion"
             exit 1

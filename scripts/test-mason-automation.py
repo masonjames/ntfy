@@ -10,7 +10,7 @@ zizmor = (ROOT / ".github/workflows/zizmor.yml").read_text()
 dockerfile = (ROOT / "Dockerfile-build").read_text()
 
 assert "ghcr.io/masonjames/ntfy:latest" not in release
-assert "push_latest: false" in release
+assert "type=raw,value=latest" not in release
 assert "ntfy-release deploy" in release
 assert "vars.NTFY_AUTO_DEPLOY_ENABLED == 'true'" in release
 assert "TZ=America/New_York" in release
@@ -18,7 +18,9 @@ assert "^7-03[0-5][0-9]$" in release
 assert "deployment-rollback" in release
 assert "service:ntfy|0052cc" in release
 assert "issues: write" in release
-assert "uses: masonjames/platform-infra/.github/workflows/ghcr-build-webhook.yml@bbc83cf3e8cd8ea153aa440d0509ad34b4fb5797" in release
+assert "ghcr.io/masonjames/ntfy@$IMAGE_DIGEST" in release
+assert "actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32" in release
+assert "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25" in release
 assert "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in sync
 assert "permission-contents: write" in sync
 assert "persist-credentials: false" in sync

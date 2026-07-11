@@ -15,6 +15,7 @@ assert "type=raw,value=latest" not in release
 assert "gh workflow run ntfy-release.yml" in release
 assert "--repo masonjames/platform-infra" in release
 assert "permission-actions: write" in release
+assert "permission-checks: read" in release
 assert "runs-on: [self-hosted, hetzner]" not in release
 assert "vars.NTFY_AUTO_DEPLOY_ENABLED == 'true'" in release
 assert "TZ=America/New_York" in release

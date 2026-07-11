@@ -197,6 +197,7 @@ jobs:
           owner: masonjames
           repositories: platform-infra
           permission-actions: write
+          permission-checks: read
           permission-contents: read
 
       - name: Dispatch platform-owned release and wait for verification

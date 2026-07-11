@@ -20,4 +20,12 @@ const routes = {
   },
 };
 
+const dynamicPathPrefix = (route) => route.slice(0, route.indexOf("/:"));
+
+export const isPublicAuthPath = (pathname) =>
+  pathname === routes.login ||
+  pathname === routes.passwordResetRequest ||
+  pathname.startsWith(`${dynamicPathPrefix(routes.passwordReset)}/`) ||
+  pathname.startsWith(`${dynamicPathPrefix(routes.emailVerify)}/`);
+
 export default routes;

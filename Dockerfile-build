@@ -34,6 +34,7 @@ RUN make web-build
 
 # cli & server
 ADD go.mod go.sum main.go ./
+ADD ./action ./action
 ADD ./client ./client
 ADD ./cmd ./cmd
 ADD ./log ./log
@@ -48,6 +49,7 @@ ADD ./webpush ./webpush
 ADD ./attachment ./attachment
 ADD ./mail ./mail
 ADD ./s3 ./s3
+ADD ./template ./template
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build make VERSION=$VERSION COMMIT=$COMMIT cli-linux-server
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b

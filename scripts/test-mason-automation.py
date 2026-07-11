@@ -8,6 +8,7 @@ release = (ROOT / ".github/workflows/ghcr-build.yml").read_text()
 sync = (ROOT / ".github/workflows/upstream-sync.yml").read_text()
 zizmor = (ROOT / ".github/workflows/zizmor.yml").read_text()
 dockerfile = (ROOT / "Dockerfile-build").read_text()
+build_workflow = (ROOT / ".github/workflows/build.yaml").read_text()
 
 assert "ghcr.io/masonjames/ntfy:latest" not in release
 assert "type=raw,value=latest" not in release
@@ -32,6 +33,9 @@ assert 'org.opencontainers.image.revision="$COMMIT"' in dockerfile
 assert 'org.opencontainers.image.source="$SOURCE_URL"' in dockerfile
 assert re.search(r"^FROM golang:[^@\n]+@sha256:[0-9a-f]{64} AS builder$", dockerfile, re.MULTILINE)
 assert re.search(r"^FROM alpine:[^@\n]+@sha256:[0-9a-f]{64}$", dockerfile, re.MULTILINE)
+assert "ADD ./action ./action" in dockerfile
+assert "ADD ./template ./template" in dockerfile
+assert build_workflow.index("Build the deployment image without publishing") < build_workflow.index("Build all the things")
 
 for workflow in (release, sync, zizmor):
     for match in re.finditer(r"uses:\s+[^\s@]+@([^\s#]+)", workflow):

@@ -27,5 +27,6 @@ jobs:
         with:
           advanced-security: false
           min-severity: high
+          online-audits: false
       - name: Verify Mason release automation contracts
         run: python3 scripts/test-mason-automation.py

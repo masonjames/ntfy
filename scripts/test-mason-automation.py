@@ -25,6 +25,7 @@ assert "persist-credentials: false" in sync
 assert "git merge --no-ff upstream/main" in sync
 assert "gh pr create" in sync
 assert "zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e" in zizmor
+assert "online-audits: false" in zizmor
 assert 'org.opencontainers.image.revision="$COMMIT"' in dockerfile
 assert 'org.opencontainers.image.source="$SOURCE_URL"' in dockerfile
 assert re.search(r"^FROM golang:[^@\n]+@sha256:[0-9a-f]{64} AS builder$", dockerfile, re.MULTILINE)

@@ -1,6 +1,9 @@
 package server
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"heckel.io/ntfy/v2/ban"
+	"heckel.io/ntfy/v2/user"
 )
 
 // TestServer_BanFeed_WritesOffenderToFile is the end-to-end wiring test: a rejected request flows
@@ -40,6 +44,55 @@ func TestServer_BanFeed_WritesOffenderToFile(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	require.Len(t, lines, 1)
 	require.Contains(t, lines[0], " 9.9.9.9 9.9.9.9/32 400 ") // <ip> <prefix> <http-code> <ntfy-code>
+}
+
+// TestServer_BanFeed_WritesPreUpgradeWebSocketRejection verifies that adding WebSocket upgrade
+// headers cannot bypass the ban feed. Authorization rejects this request before the connection is
+// upgraded, so it remains an ordinary HTTP rejection and must count against the offender's prefix.
+func TestServer_BanFeed_WritesPreUpgradeWebSocketRejection(t *testing.T) {
+	banFile := filepath.Join(t.TempDir(), "ban.log")
+	conf := newTestConfigWithAuthFile(t, "")
+	conf.AuthDefault = user.PermissionDenyAll
+	conf.BanFile = banFile
+	conf.BanWindow = time.Minute
+	conf.BanThreshold = 1
+	conf.BanWeights = ban.Weights{"*": 1}
+	s := newTestServer(t, conf)
+
+	for i := 0; i < 3; i++ {
+		response := request(t, s, "GET", "/mytopic/ws", "", map[string]string{
+			"Connection": "Upgrade",
+			"Upgrade":    "websocket",
+		})
+		require.Equal(t, 403, response.Code)
+	}
+
+	s.ban.Close()
+	data, err := os.ReadFile(banFile)
+	require.NoError(t, err)
+	require.Contains(t, string(data), " 9.9.9.9 9.9.9.9/32 403 40301")
+}
+
+func TestServer_BanFeed_SkipsPostUpgradeWebSocketError(t *testing.T) {
+	banFile := filepath.Join(t.TempDir(), "ban.log")
+	conf := newTestConfig(t, "")
+	conf.BanFile = banFile
+	conf.BanWindow = time.Minute
+	conf.BanThreshold = 1
+	conf.BanWeights = ban.Weights{"*": 1}
+	s := newTestServer(t, conf)
+
+	r := httptest.NewRequest(http.MethodGet, "/mytopic/ws", nil)
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	r, v, err := s.maybeAuthenticate(r)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		s.handleError(httptest.NewRecorder(), r, v, &errWebSocketPostUpgrade{errors.New("closed")})
+	}
+
+	s.ban.Close()
+	require.NoFileExists(t, banFile)
 }
 
 // TestServer_BanFeed_DisabledByDefault verifies the feature is off with no ban file: s.ban is

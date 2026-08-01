@@ -53,6 +53,14 @@ func TestWeights_WeightFor(t *testing.T) {
 	require.Equal(t, 1, weights.WeightFor(30012))
 }
 
+func TestWeights_WeightFor_ExactBeatsEqualLengthPrefix(t *testing.T) {
+	weights, err := ParseWeights([]string{"42909:10", "42909*:0", "*:1"})
+	require.NoError(t, err)
+	for i := 0; i < 100; i++ {
+		require.Equal(t, 10, weights.WeightFor(42909)) // Exact must win regardless of map iteration order
+	}
+}
+
 func TestWeights_WeightFor_NoStarRuleImpliesWeight1(t *testing.T) {
 	// With no "*" rule, a code that matches nothing defaults to weight 1 (can be banned), so the
 	// feature can't be silently turned into a no-op by forgetting "*". Explicit codes still win.

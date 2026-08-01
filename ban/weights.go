@@ -41,6 +41,9 @@ func ParseWeights(entries []string) (Weights, error) {
 // bans; use "*:0" to exempt everything not explicitly weighted.
 func (w Weights) WeightFor(errorCode int) int {
 	code := strconv.Itoa(errorCode)
+	if weight, ok := w[code]; ok {
+		return weight // Exact codes always beat an equally long prefix matcher.
+	}
 	weight, bestLen, matched := 0, -1, false
 	for key, wt := range w {
 		matchLen := -1
@@ -51,8 +54,6 @@ func (w Weights) WeightFor(errorCode int) int {
 			if prefix := strings.TrimSuffix(key, "*"); strings.HasPrefix(code, prefix) {
 				matchLen = len(prefix)
 			}
-		case key == code:
-			matchLen = len(code)
 		}
 		if matchLen > bestLen {
 			weight, bestLen, matched = wt, matchLen, true

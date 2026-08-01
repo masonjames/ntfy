@@ -541,6 +541,7 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, v *visitor,
 		var postUpgradeErr *errWebSocketPostUpgrade
 		if !errors.As(err, &postUpgradeErr) {
 			w.WriteHeader(httpErr.HTTPCode)
+			s.recordBanRejection(r, httpErr)
 		}
 		return
 	}
@@ -559,10 +560,15 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, v *visitor,
 	w.Header().Set("Access-Control-Allow-Origin", s.config.AccessControlAllowOrigin) // CORS, allow cross-origin requests
 	w.WriteHeader(httpErr.HTTPCode)
 	io.WriteString(w, httpErr.JSON()+"\n")
-	if s.ban != nil {
-		if ip, err := fromContext[netip.Addr](r, contextVisitorIP); err == nil {
-			s.ban.Record(ip, httpErr.HTTPCode, httpErr.Code)
-		}
+	s.recordBanRejection(r, httpErr)
+}
+
+func (s *Server) recordBanRejection(r *http.Request, httpErr *errHTTP) {
+	if s.ban == nil {
+		return
+	}
+	if ip, err := fromContext[netip.Addr](r, contextVisitorIP); err == nil {
+		s.ban.Record(ip, httpErr.HTTPCode, httpErr.Code)
 	}
 }
 

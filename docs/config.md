@@ -2162,8 +2162,10 @@ Each line in `ban-file` has the format `<RFC3339-timestamp> <ip> <prefix> <http-
 ```
 
 `<prefix>` is `<ip>` masked to the rate-limiting prefix (`visitor-prefix-bits-ipv4`/`-ipv6`) -- the
-same unit ntfy rate-limits by. Have the fail2ban filter capture the bare `<ip>` (the action then
-applies the prefix):
+same unit ntfy rate-limits by. Have the fail2ban filter capture `<prefix>` with the `<SUBNET>` token
+(available in fail2ban 0.11.2 and newer), so the firewall action bans the same prefix that ntfy
+accounts and throttles as one unit. The standard `iptables-multiport` action passes this value to
+iptables as the source (`-s`), which accepts CIDR prefixes:
 
 === "server.yml"
     ```yaml
@@ -2178,7 +2180,7 @@ applies the prefix):
 === "/etc/fail2ban/filter.d/ntfy-ban.conf"
     ```
     [Definition]
-    failregex = ^\S+ <HOST> \S+ \d+ \d+$
+    failregex = ^\S+ \S+ <SUBNET> \d+ \d+$
     datepattern = ^%%Y-%%m-%%dT%%H:%%M:%%S
     ignoreregex =
     ```

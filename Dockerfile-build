@@ -35,6 +35,7 @@ RUN make web-build
 # cli & server
 ADD go.mod go.sum main.go ./
 ADD ./action ./action
+ADD ./ban ./ban
 ADD ./client ./client
 ADD ./cmd ./cmd
 ADD ./log ./log

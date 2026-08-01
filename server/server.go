@@ -31,6 +31,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"heckel.io/ntfy/v2/action"
 	"heckel.io/ntfy/v2/attachment"
+	"heckel.io/ntfy/v2/ban"
 	"heckel.io/ntfy/v2/db"
 	"heckel.io/ntfy/v2/db/pg"
 	"heckel.io/ntfy/v2/log"
@@ -57,6 +58,7 @@ type Server struct {
 	mailer            mail.Sender
 	topics            map[string]*topic
 	visitors          map[string]*visitor // ip:<ip> or user:<user>
+	ban               *ban.Service        // Abuse ban-feed; nil when the feature is disabled (no ban file)
 	firebaseClient    *firebaseClient
 	twilio            *twilioClient
 	messages          int64                               // Total number of messages (persisted if messageCache enabled)
@@ -290,6 +292,17 @@ func New(conf *Config) (*Server, error) {
 		}
 		firebaseClient = newFirebaseClient(sender, auther)
 	}
+	var banner *ban.Service
+	if conf.BanFile != "" {
+		banner = ban.NewService(&ban.Config{
+			File:           conf.BanFile,
+			Window:         conf.BanWindow,
+			Threshold:      conf.BanThreshold,
+			Weights:        conf.BanWeights,
+			PrefixBitsIPv4: conf.VisitorPrefixBitsIPv4,
+			PrefixBitsIPv6: conf.VisitorPrefixBitsIPv6,
+		})
+	}
 	s := &Server{
 		config:          conf,
 		db:              pool,
@@ -299,6 +312,7 @@ func New(conf *Config) (*Server, error) {
 		firebaseClient:  firebaseClient,
 		twilio:          newTwilioClient(conf, userManager),
 		mailer:          sender,
+		ban:             banner,
 		topics:          topics,
 		userManager:     userManager,
 		messages:        messages,
@@ -454,6 +468,9 @@ func (s *Server) Stop() {
 		s.attachment.Close()
 	}
 	s.closeDatabases()
+	if s.ban != nil {
+		s.ban.Close()
+	}
 	if s.closeChan != nil {
 		close(s.closeChan)
 	}
@@ -476,7 +493,7 @@ func (s *Server) closeDatabases() {
 
 // handle is the main entry point for all HTTP requests
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
-	v, err := s.maybeAuthenticate(r) // Note: Always returns v, even when error is returned
+	r, v, err := s.maybeAuthenticate(r) // Note: Always returns v (and r, with the client IP in its context), even on error
 	if err != nil {
 		s.handleError(w, r, v, err)
 		return
@@ -542,6 +559,11 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, v *visitor,
 	w.Header().Set("Access-Control-Allow-Origin", s.config.AccessControlAllowOrigin) // CORS, allow cross-origin requests
 	w.WriteHeader(httpErr.HTTPCode)
 	io.WriteString(w, httpErr.JSON()+"\n")
+	if s.ban != nil {
+		if ip, err := fromContext[netip.Addr](r, contextVisitorIP); err == nil {
+			s.ban.Record(ip, httpErr.HTTPCode, httpErr.Code)
+		}
+	}
 }
 
 func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request, v *visitor) error {

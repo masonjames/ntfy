@@ -3227,7 +3227,10 @@ your templates there first ([example for Grafana alert](https://repeatit.io/#/sh
 !!! info
     A few Go template features are disabled for user-supplied templates: `{{define}}`, `{{template}}`,
     `{{block}}`, and `{{call}}` are not allowed. Templates also run with a short execution time limit --
-    a template that loops too long is stopped and rejected with an HTTP 400 error.
+    a template that loops too long is stopped and rejected with an HTTP 400 error. Templates are
+    limited to 32 KB in size, `printf` widths and precisions must be below 1000 (`%999d` is
+    allowed, `%1000d` is not), including the `%*d` form that takes the width from an argument, and
+    `indent`/`nindent` are limited to 100 spaces.
 
 ### Template functions
 ntfy supports a subset of the **[Sprig template functions](publish/template-functions.md)** (originally copied from [Sprig](https://github.com/Masterminds/sprig),
@@ -4928,7 +4931,8 @@ but just in case, let's list them all:
 | **Subscription limit**     | By default, the server allows each visitor to keep 30 connections to the server open.                                                                                                                                   |
 | **Attachment size limit**  | By default, the server allows attachments up to 15 MB in size, up to 100 MB in total per visitor and up to 5 GB across all visitors. On ntfy.sh, the attachment size limit is 2 MB, and the per-visitor total is 20 MB. |
 | **Attachment expiry**      | By default, the server deletes attachments after 3 hours and thereby frees up space from the total visitor attachment limit.                                                                                            |
-| **Attachment bandwidth**   | By default, the server allows 500 MB of GET/PUT/POST traffic for attachments per visitor in a 24 hour period. Traffic exceeding that is rejected. On ntfy.sh, the daily bandwidth limit is 200 MB.                      |
+| **Title and tag size**    | The message title is limited to 1 KB, and all tags combined to 512 bytes. Requests exceeding either are rejected with HTTP 400. |
+| **Daily bandwidth**        | By default, the server allows 500 MB of traffic per visitor in a 24 hour period, covering attachment GET/PUT/POST traffic and messages replayed from the cache by [poll requests](subscribe/api.md#replay-limits). Traffic exceeding that is rejected. On ntfy.sh, the daily bandwidth limit is 200 MB.  |
 | **Total number of topics** | By default, the server is configured to allow 15,000 topics. The ntfy.sh server has higher limits though.                                                                                                               |
 
 These limits can be changed on a per-user basis using [tiers](config.md#tiers). If [payments](config.md#payments) are enabled, a user tier can be changed by purchasing

@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 	"heckel.io/ntfy/v2/db"
+	"heckel.io/ntfy/v2/db/schema"
 	"heckel.io/ntfy/v2/util"
 )
 
@@ -30,25 +31,25 @@ const (
 		SELECT mid, sequence_id, time, event, expires, topic, message, title, priority, tags, click, icon, actions, attachment_name, attachment_type, attachment_size, attachment_expires, attachment_url, sender, user, content_type, encoding
 		FROM messages
 		WHERE topic = ? AND time >= ? AND published = 1
-		ORDER BY time, id
+		ORDER BY time DESC, id DESC
 	`
 	sqliteSelectMessagesSinceTimeIncludeScheduledQuery = `
 		SELECT mid, sequence_id, time, event, expires, topic, message, title, priority, tags, click, icon, actions, attachment_name, attachment_type, attachment_size, attachment_expires, attachment_url, sender, user, content_type, encoding
 		FROM messages
 		WHERE topic = ? AND time >= ?
-		ORDER BY time, id
+		ORDER BY time DESC, id DESC
 	`
 	sqliteSelectMessagesSinceIDQuery = `
 		SELECT mid, sequence_id, time, event, expires, topic, message, title, priority, tags, click, icon, actions, attachment_name, attachment_type, attachment_size, attachment_expires, attachment_url, sender, user, content_type, encoding
 		FROM messages
 		WHERE topic = ? AND id > COALESCE((SELECT id FROM messages WHERE mid = ?), 0) AND published = 1
-		ORDER BY time, id
+		ORDER BY time DESC, id DESC
 	`
 	sqliteSelectMessagesSinceIDIncludeScheduledQuery = `
 		SELECT mid, sequence_id, time, event, expires, topic, message, title, priority, tags, click, icon, actions, attachment_name, attachment_type, attachment_size, attachment_expires, attachment_url, sender, user, content_type, encoding
 		FROM messages
 		WHERE topic = ? AND (id > COALESCE((SELECT id FROM messages WHERE mid = ?), 0) OR published = 0)
-		ORDER BY time, id
+		ORDER BY time DESC, id DESC
 	`
 	sqliteSelectMessagesLatestQuery = `
 		SELECT mid, sequence_id, time, event, expires, topic, message, title, priority, tags, click, icon, actions, attachment_name, attachment_type, attachment_size, attachment_expires, attachment_url, sender, user, content_type, encoding
@@ -113,7 +114,10 @@ func NewSQLiteStore(filename, startupQueries string, cacheDuration time.Duration
 	if err != nil {
 		return nil, err
 	}
-	if err := setupSQLite(d, startupQueries, cacheDuration); err != nil {
+	if err := runSQLiteStartupQueries(d, startupQueries); err != nil {
+		return nil, err
+	}
+	if err := schema.Migrate(d, schema.SQLite, schemaStore, sqliteCurrentSchemaVersion, sqliteCreateTables, sqliteMigrations(cacheDuration)); err != nil {
 		return nil, err
 	}
 	return newCache(db.New(&db.Host{DB: d}, nil), sqliteQueries, &sync.Mutex{}, batchSize, batchTimeout, nop), nil

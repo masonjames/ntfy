@@ -417,7 +417,10 @@
 
 # Rate limiting: Attachment size and bandwidth limits per visitor:
 # - visitor-attachment-total-size-limit is the total storage limit used for attachments per visitor
-# - visitor-attachment-daily-bandwidth-limit is the total daily attachment download/upload traffic limit per visitor
+# - visitor-attachment-daily-bandwidth-limit is the total daily traffic limit per visitor. It covers
+#   attachment downloads/uploads AND messages replayed from the message cache by poll requests. A
+#   poll without a "since" cursor returns the topic's entire cache, so a busy topic can be re-read
+#   for many times its own size; charging it here caps what one visitor can pull per day.
 #
 # visitor-attachment-total-size-limit: "100M"
 # visitor-attachment-daily-bandwidth-limit: "500M"
@@ -456,8 +459,9 @@
 # doing, and/or secure access to the endpoint in your reverse proxy.
 #
 # - enable-metrics enables the /metrics endpoint for the default ntfy server (i.e. HTTP, HTTPS and/or Unix socket)
-# - metrics-listen-http exposes the metrics endpoint via a dedicated [IP]:port. If set, this option implicitly
-#   enables metrics as well, e.g. "10.0.1.1:9090" or ":9090"
+# - metrics-listen-http moves the metrics endpoint to a dedicated [IP]:port, e.g. "10.0.1.1:9090" or ":9090".
+#   It implicitly enables metrics. If set, the metrics are served only on that dedicated port, and the default
+#   ntfy server does not serve /metrics, even if enable-metrics is also set.
 #
 # enable-metrics: false
 # metrics-listen-http:

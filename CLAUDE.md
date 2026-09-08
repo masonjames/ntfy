@@ -131,7 +131,7 @@ This fork is deployed to `ntfy.masonjames.com` via GHCR and Dokploy.
 
 ### Docker Image
 
-- **Registry**: `ghcr.io/masonjames/ntfy:latest`
+- **Registry**: `ghcr.io/masonjames/ntfy@sha256:<verified-digest>`
 - **Build**: GitHub Actions on push to main (`.github/workflows/ghcr-build.yml`)
 - **Dockerfile**: `Dockerfile-build` (multi-stage build)
 
@@ -170,7 +170,7 @@ curl -s https://ntfy.masonjames.com/v1/health
 
 The server runs with:
 - `NTFY_AUTH_DEFAULT_ACCESS=deny-all` (authentication required)
-- `NTFY_BEHIND_PROXY=true` (runs behind Traefik)
+- `NTFY_BEHIND_PROXY=true` (runs behind Caddy)
 - `NTFY_ENABLE_LOGIN=true` / `NTFY_ENABLE_SIGNUP=false`
 
 ### Related Documentation

@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm@sha256:a9c020ee3d1508c7be5435c262434e3d3fc1d0e76a11afeb9ddae7d60bc86aa4 AS builder
+FROM golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+ADD .go-version .
+RUN test "$(go env GOVERSION)" = "go$(cat .go-version)"
 ADD Makefile .
 
 # docs
@@ -51,6 +53,8 @@ ADD ./attachment ./attachment
 ADD ./mail ./mail
 ADD ./s3 ./s3
 ADD ./template ./template
+ADD ./metrics ./metrics
+ADD ./twilio ./twilio
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build make VERSION=$VERSION COMMIT=$COMMIT cli-linux-server
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b

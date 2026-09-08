@@ -73,6 +73,16 @@ const (
 	DefaultAttachmentExpiryDuration    = 3 * time.Hour
 	DefaultAttachmentOrphanGracePeriod = time.Hour // Don't delete orphaned objects younger than this to avoid races with in-flight uploads
 
+	// DefaultMessagePollSizeLimit caps what one cache replay returns per topic. It is a backstop
+	// against a single request materializing an entire topic cache, not a tunable: on ntfy.sh it
+	// would fire on 2 of ~98k cached topics. See docs/subscribe/api.md#replay-limits.
+	DefaultMessagePollSizeLimit = 10 * 1024 * 1024
+
+	// messageTitleSizeLimit and messageTagsSizeLimit cap two publisher-controlled fields that
+	// otherwise have no limit of their own. Sized off ntfy.sh's own cache: title p999 is 212 bytes
+	// (16 of ~3M messages exceed 1 KB), tags p999 is 244 (197 exceed 512).
+	messageTitleSizeLimit = 1024
+	messageTagsSizeLimit  = 512
 )
 
 // Defines all per-visitor limits
@@ -130,9 +140,9 @@ type Config struct {
 	AuthFile                             string
 	AuthStartupQueries                   string
 	AuthDefault                          user.Permission
-	AuthUsers                            []*user.User
+	AuthUsers                            []*user.User `hash:"-"`
 	AuthAccess                           map[string][]*user.Grant
-	AuthTokens                           map[string][]*user.Token
+	AuthTokens                           map[string][]*user.Token `hash:"-"`
 	AuthBcryptCost                       int
 	AuthStatsQueueWriterInterval         time.Duration
 	AuthAccessCacheEnabled               bool          // Enables the in-memory ACL cache (high volume servers only)
@@ -153,28 +163,28 @@ type Config struct {
 	FirebasePollInterval                 time.Duration
 	FirebaseQuotaExceededPenaltyDuration time.Duration
 	UpstreamBaseURL                      string
-	UpstreamAccessToken                  string
+	UpstreamAccessToken                  string `hash:"-"`
 	SMTPSenderAddr                       string
 	SMTPSenderUser                       string
-	SMTPSenderPass                       string
+	SMTPSenderPass                       string `hash:"-"`
 	SMTPSenderFrom                       string
 	SMTPSenderVerify                     bool
 	SMTPServerListen                     string
 	SMTPServerDomain                     string
 	SMTPServerAddrPrefix                 string
 	TwilioAccount                        string
-	TwilioAuthToken                      string
+	TwilioAuthToken                      string `hash:"-"`
 	TwilioPhoneNumber                    string
 	TwilioCallsBaseURL                   string
 	TwilioVerifyBaseURL                  string
 	TwilioVerifyService                  string
 	TwilioCallFormat                     *template.Template
-	MetricsEnable                        bool
 	MetricsListenHTTP                    string
 	ProfileListenHTTP                    string
 	MessageDelayMin                      time.Duration
 	MessageDelayMax                      time.Duration
 	MessageSizeLimit                     int
+	MessagePollSizeLimit                 int64
 	TotalTopicLimit                      int
 	TotalAttachmentSizeLimit             int64
 	VisitorSubscriptionLimit             int
@@ -199,8 +209,8 @@ type Config struct {
 	BehindProxy                          bool           // If true, the server will trust the proxy client IP header to determine the client IP address (IPv4 and IPv6 supported)
 	ProxyForwardedHeader                 string         // The header field to read the real/client IP address from, if BehindProxy is true, defaults to "X-Forwarded-For" (IPv4 and IPv6 supported)
 	ProxyTrustedPrefixes                 []netip.Prefix // List of trusted proxy networks (IPv4 or IPv6) that will be stripped from the Forwarded header if BehindProxy is true
-	StripeSecretKey                      string
-	StripeWebhookKey                     string
+	StripeSecretKey                      string         `hash:"-"`
+	StripeWebhookKey                     string         `hash:"-"`
 	StripePriceCacheDuration             time.Duration
 	BillingContact                       string
 	EnableSignup                         bool // Enable creation of accounts via API and UI
@@ -209,7 +219,7 @@ type Config struct {
 	EnableReservations                   bool // Allow users with role "user" to own/reserve topics
 	EnableMetrics                        bool
 	AccessControlAllowOrigin             string // CORS header field to restrict access from web clients
-	WebPushPrivateKey                    string
+	WebPushPrivateKey                    string `hash:"-"`
 	WebPushPublicKey                     string
 	WebPushFile                          string
 	WebPushEmailAddress                  string
@@ -283,6 +293,7 @@ func NewConfig() *Config {
 		TwilioVerifyService:                  "",
 		TwilioCallFormat:                     nil,
 		MessageSizeLimit:                     DefaultMessageSizeLimit,
+		MessagePollSizeLimit:                 DefaultMessagePollSizeLimit,
 		MessageDelayMin:                      DefaultMessageDelayMin,
 		MessageDelayMax:                      DefaultMessageDelayMax,
 		TotalTopicLimit:                      DefaultTotalTopicLimit,
@@ -343,6 +354,10 @@ func (c *Config) Hash() string {
 	for i := 0; i < v.NumField(); i++ {
 		field := v.Field(i)
 		fieldName := t.Field(i).Name
+		// Secrets must not feed the hash
+		if t.Field(i).Tag.Get("hash") == "-" {
+			continue
+		}
 		// Try to marshal the field and skip if it fails (e.g. *template.Template, netip.Prefix)
 		if b, err := json.Marshal(field.Interface()); err == nil {
 			result += fmt.Sprintf("%s:%s|", fieldName, string(b))

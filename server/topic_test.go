@@ -45,13 +45,50 @@ func TestTopic_CancelSubscribersUser(t *testing.T) {
 	cancelFn2 := func() {
 		canceled2.Store(true)
 	}
+	canceled3 := atomic.Bool{}
+	cancelFn3 := func() { canceled3.Store(true) }
 	to := newTopic("mytopic")
 	to.Subscribe(subFn, "u_another", cancelFn1)
 	to.Subscribe(subFn, "u_phil", cancelFn2)
+	to.Subscribe(subFn, "u_phil", cancelFn3)
 
 	to.CancelSubscriberUser("u_phil")
 	require.False(t, canceled1.Load())
 	require.True(t, canceled2.Load())
+	require.True(t, canceled3.Load())
+}
+
+func TestTopic_CancelSubscribersOutsideLock(t *testing.T) {
+	for _, mode := range []string{"user", "except"} {
+		t.Run(mode, func(t *testing.T) {
+			to := newTopic("mytopic")
+			canceled := false
+			to.Subscribe(func(v *visitor, msg *model.Message) error { return nil }, "u_phil", func() {
+				// Context logging and Unsubscribe may reenter the topic. TryLock
+				// detects the old lock-held callback without hanging the test.
+				unlocked := to.mu.TryLock()
+				if unlocked {
+					to.mu.Unlock()
+				}
+				require.True(t, unlocked)
+				canceled = true
+			})
+			if mode == "user" {
+				to.CancelSubscriberUser("u_phil")
+			} else {
+				to.CancelSubscribersExceptUser("u_other")
+			}
+			require.True(t, canceled)
+		})
+	}
+}
+
+func TestTopic_CancelSubscriberEmptyUser(t *testing.T) {
+	to := newTopic("mytopic")
+	canceled := false
+	to.Subscribe(func(v *visitor, msg *model.Message) error { return nil }, "", func() { canceled = true })
+	to.CancelSubscriberUser("")
+	require.False(t, canceled)
 }
 
 func TestTopic_Keepalive(t *testing.T) {

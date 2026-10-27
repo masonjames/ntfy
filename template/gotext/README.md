@@ -83,8 +83,16 @@ on a Go bump pulls in all upstream fixes for free. `.go-version` is authoritativ
 bump the toolchain: edit `.go-version`, install that toolchain
 (`go install golang.org/dl/<version>@latest && <version> download`), then re-sync:
 
+Treat the builder pin in `Dockerfile-build`, `.go-version`, and this generated
+copy as one update, including Go patch releases. Before publishing the source or
+building an image, run both targets below. Regeneration may leave all Go files
+unchanged; verify that result through the content check rather than editing
+`GENERATED_FROM` alone. These targets enumerate and copy standard-library sources
+and reapply the local patch; they do not compile the application.
+
 ```
 make update-template   # copies the files from your GOROOT and re-applies patches/*.patch
+make template-check    # verifies the marker and actual copied content
 ```
 
 `make update-template` **errors** unless your local Go matches `.go-version` -- it validates against

@@ -142,26 +142,39 @@ func (t *topic) Keepalive() {
 	t.lastAccess = time.Now()
 }
 
-// CancelSubscribersExceptUser calls the cancel function for all subscribers, forcing
+// CancelSubscribersExceptUser cancels subscriptions other than the named user's.
+// Copy matches under the lock, then cancel outside it: logging and a canceled
+// stream's Unsubscribe may need the topic lock again.
 func (t *topic) CancelSubscribersExceptUser(exceptUserID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	subscribers := make([]*topicSubscriber, 0)
 	for _, s := range t.subscribers {
 		if s.userID != exceptUserID {
-			t.cancelUserSubscriber(s)
+			subscribers = append(subscribers, s)
 		}
+	}
+	t.mu.RUnlock()
+	for _, s := range subscribers {
+		t.cancelUserSubscriber(s)
 	}
 }
 
-// CancelSubscriberUser kills the subscriber with the given user ID
+// CancelSubscriberUser cancels every subscription for the named user.
+// An empty ID must not cancel anonymous subscriptions.
 func (t *topic) CancelSubscriberUser(userID string) {
+	if userID == "" {
+		return
+	}
 	t.mu.RLock()
-	defer t.mu.RUnlock()
+	subscribers := make([]*topicSubscriber, 0)
 	for _, s := range t.subscribers {
 		if s.userID == userID {
-			t.cancelUserSubscriber(s)
-			return
+			subscribers = append(subscribers, s)
 		}
+	}
+	t.mu.RUnlock()
+	for _, s := range subscribers {
+		t.cancelUserSubscriber(s)
 	}
 }
 
